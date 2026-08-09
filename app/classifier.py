@@ -1,3 +1,12 @@
+"""Structured LLM classifiers for TAG reasoning and POLICY reasoning.
+
+Per R6-A requirements:
+- Reasoning is split into distinct TAG and POLICY domains.
+- TAG reasoning proposes structured classification recommendations from allowed tag FQNs;
+  it does NOT require OpenMetadata Suggestion creation.
+- POLICY reasoning produces structured logical policy proposals (subjects, resource, access, masks, row_filter);
+  it does NOT output native Ranger policy JSON or activate policies directly.
+"""
 from __future__ import annotations
 
 import json
@@ -8,7 +17,16 @@ try:
 except ImportError:
     ChatOpenAI = None
 
-from app.schemas import AgentDecision
+from app.schemas import (
+    AgentDecision,
+    AgentTagSuggestion,
+    LogicalPolicyProposal,
+    PolicyReasoningResult,
+    PolicyResource,
+    Subject,
+    TagRecommendation,
+    TagReasoningResult,
+)
 
 
 class StructuredClassifier(Protocol):
@@ -19,11 +37,24 @@ class StructuredClassifier(Protocol):
         *,
         catalog_context: dict[str, Any],
         allowed_tags: list[str],
-    ) -> AgentDecision: ...
+    ) -> TagReasoningResult: ...
+
+
+class PolicyClassifier(Protocol):
+    model_name: str
+
+    def reason_policy(
+        self,
+        *,
+        catalog_context: dict[str, Any],
+        governance_context: dict[str, Any] | None,
+        target_subjects: list[Subject] | None,
+        policy_intent: str | None,
+    ) -> PolicyReasoningResult: ...
 
 
 class OpenAIStructuredClassifier:
-    """OpenAI structured output classifier using ChatOpenAI."""
+    """OpenAI structured output classifier for TAG reasoning."""
 
     def __init__(
         self,
@@ -31,7 +62,7 @@ class OpenAIStructuredClassifier:
         model: str,
         api_key: str | None,
         base_url: str | None = None,
-        prompt_version: str = "v2",
+        prompt_version: str = "v3",
     ) -> None:
         if ChatOpenAI is None:
             raise RuntimeError(
@@ -47,7 +78,7 @@ class OpenAIStructuredClassifier:
         if base_url:
             client_options["base_url"] = base_url
         self._llm = ChatOpenAI(**client_options).with_structured_output(
-            AgentDecision
+            TagReasoningResult
         )
 
     def classify(
@@ -55,53 +86,104 @@ class OpenAIStructuredClassifier:
         *,
         catalog_context: dict[str, Any],
         allowed_tags: list[str],
-    ) -> AgentDecision:
+    ) -> TagReasoningResult:
         if self._llm is None:
             raise RuntimeError("LLM classifier is not initialized")
         prompt = (
-            "You are a Data Governance Classification Agent.\n"
-            "You are invoked ONLY when the deterministic rule engine could not reach a "
-            "conclusive decision (NO_MATCH, AMBIGUOUS, or CONFLICT). Your task is to classify the "
-            "entity or its individual columns with sensitivity tags from a governed allow-list.\n"
+            "You are a Data Governance Tag Classification Agent.\n"
+            "Your task is to analyze entity metadata and recommend sensitivity classification tags.\n"
+            "\n"
+            "## Invariants & Guardrails\n"
+            "1. NEVER invent, abbreviate, or modify tag FQNs. You MUST ONLY select tags from the allowed tag list below.\n"
+            "2. If no allowed tag applies with confidence >= 0.5, return an empty recommendations list.\n"
+            "3. You are generating structured proposals for human/system evaluation. Creation of OpenMetadata Suggestions is NOT required.\n"
+            "4. Never attempt direct access to Ranger credentials, direct Ranger writes, or governance PostgreSQL DB.\n"
             "\n"
             "## Allowed Tag FQNs\n"
             f"{json.dumps(sorted(set(allowed_tags)))}\n"
-            "You MUST ONLY suggest tags from this exact list. Never invent, abbreviate, or "
-            "modify tag FQNs. If none of the allowed tags apply, return an empty suggestions list.\n"
             "\n"
-            "## Reasoning Steps\n"
-            "Analyze the OpenMetadata context below and follow these steps:\n"
-            "1. **Entity Inspection**: Examine the entity name, fully qualified name, and description "
-            "for sensitivity indicators.\n"
-            "2. **Column Analysis**: For each column, inspect the column name, data type, description, "
-            "and any sample values. Look for patterns indicating PII or sensitive data "
-            "(e.g., phone numbers, email addresses, national IDs, financial data).\n"
-            "3. **Lineage Context**: If lineage data is provided, check upstream and downstream "
-            "dependencies to infer sensitivity propagation.\n"
-            "4. **Tag Matching**: Match evidence from steps 1-3 against the allowed tags. "
-            "Only propose a tag when there is clear supporting evidence.\n"
+            "## Output Requirements\n"
+            "- Set `tag` to the exact allowed tag FQN.\n"
+            "- Set `field_path` to column FQN for column-level classification, or null for entity-level.\n"
+            "- Set `confidence` between 0.0 and 1.0 (do not report suggestions with confidence < 0.5).\n"
+            "- Set `rationale` citing specific metadata evidence.\n"
+            "- Set `action_recommendation` (e.g. 'APPLY', 'REVIEW', 'NO_ACTION').\n"
             "\n"
-            "## Output Rules\n"
-            "- For column-level classifications, set `field_path` to the column's fully qualified name "
-            "(e.g., `db.schema.table.column_name`). For entity-level classifications, leave "
-            "`field_path` as null.\n"
-            "- `confidence` must be between 0.0 and 1.0:\n"
-            "  - >= 0.9: Strong evidence from name pattern AND description/data type.\n"
-            "  - 0.7-0.89: Moderate evidence from name pattern OR description alone.\n"
-            "  - 0.5-0.69: Weak or indirect evidence (e.g., lineage inference only).\n"
-            "  - Below 0.5: Do NOT suggest — return no suggestion for that field.\n"
-            "- `rationale` must cite the specific metadata evidence that supports the classification. "
-            "Be concise but specific (e.g., 'Column name matches phone number pattern; "
-            "data type is VARCHAR consistent with phone storage').\n"
-            "- If no tags can be confidently assigned, return an empty `suggestions` list and provide "
-            "a `summary` explaining why classification was not possible.\n"
-            "- NEVER claim a tag has been applied. You are only proposing suggestions for human review.\n"
-            "\n"
-            "## Security\n"
-            "- Never include API tokens, credentials, or raw sensitive row data in your output.\n"
-            "\n"
-            "## OpenMetadata Context\n"
+            "## Metadata Context\n"
             f"{json.dumps(catalog_context, default=str)[:30000]}"
         )
         result = self._llm.invoke(prompt)
-        return AgentDecision.model_validate(result)
+        return TagReasoningResult.model_validate(result)
+
+
+class OpenAIPolicyClassifier:
+    """OpenAI structured output classifier for POLICY reasoning."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str | None,
+        base_url: str | None = None,
+        prompt_version: str = "v1",
+    ) -> None:
+        if ChatOpenAI is None:
+            raise RuntimeError(
+                "langchain-openai package is missing. Install with: pip install langchain-openai"
+            )
+        self.model_name = model
+        self.prompt_version = prompt_version
+        client_options: dict[str, Any] = {
+            "model": model,
+            "api_key": api_key,
+            "temperature": 0,
+        }
+        if base_url:
+            client_options["base_url"] = base_url
+        self._llm = ChatOpenAI(**client_options).with_structured_output(
+            PolicyReasoningResult
+        )
+
+    def reason_policy(
+        self,
+        *,
+        catalog_context: dict[str, Any],
+        governance_context: dict[str, Any] | None,
+        target_subjects: list[Subject] | None,
+        policy_intent: str | None,
+    ) -> PolicyReasoningResult:
+        if self._llm is None:
+            raise RuntimeError("LLM policy classifier is not initialized")
+
+        subjects_dump = (
+            json.dumps([s.model_dump() for s in target_subjects])
+            if target_subjects
+            else "Not explicitly specified (infer from context or request)"
+        )
+
+        prompt = (
+            "You are a Data Governance Policy Reasoning Agent.\n"
+            "Your task is to analyze metadata and governance context to produce a logical data-access policy proposal.\n"
+            "\n"
+            "## Invariants & Guardrails\n"
+            "1. Output MUST be a logical business domain policy proposal (subjects, resource, access, masks, row_filter).\n"
+            "2. NEVER output native Ranger policy JSON as the business domain proposal.\n"
+            "3. Subject categories MUST be explicit: USER or GROUP.\n"
+            "4. Column masks and row filters MUST represent logical intent, not raw Ranger JSON.\n"
+            "5. Do NOT attempt to activate or deploy policy directly. Policy activation requires Backend control plane approval.\n"
+            "6. Ranger state inspection or Trino queries provided in context are diagnostic evidence only, NOT workflow truth.\n"
+            "\n"
+            "## Target Subjects\n"
+            f"{subjects_dump}\n"
+            "\n"
+            "## Policy Intent / Request\n"
+            f"{policy_intent or 'Infer appropriate access control and data masking policy based on metadata sensitivity tags.'}\n"
+            "\n"
+            "## Catalog Metadata Context\n"
+            f"{json.dumps(catalog_context, default=str)[:20000]}\n"
+            "\n"
+            "## Governance Context (Ranger Inspection / Trino Diagnostic)\n"
+            f"{json.dumps(governance_context or {}, default=str)[:10000]}"
+        )
+        result = self._llm.invoke(prompt)
+        return PolicyReasoningResult.model_validate(result)

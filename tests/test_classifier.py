@@ -3,17 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 from app import classifier
-from app.schemas import AgentDecision
+from app.schemas import TagReasoningResult
 
 
 class _FakeChatOpenAI:
     init_options: dict[str, Any]
-    schema: type[AgentDecision]
+    schema: type[TagReasoningResult]
 
     def __init__(self, **kwargs: Any) -> None:
         type(self).init_options = kwargs
 
-    def with_structured_output(self, schema: type[AgentDecision]) -> _FakeChatOpenAI:
+    def with_structured_output(self, schema: type[TagReasoningResult]) -> _FakeChatOpenAI:
         type(self).schema = schema
         return self
 
@@ -34,4 +34,4 @@ def test_openai_compatible_classifier_uses_configured_base_url(monkeypatch) -> N
         "temperature": 0,
         "base_url": "https://router.example/v1",
     }
-    assert _FakeChatOpenAI.schema is AgentDecision
+    assert _FakeChatOpenAI.schema is TagReasoningResult
