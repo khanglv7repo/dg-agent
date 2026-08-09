@@ -22,6 +22,27 @@ from app.clients.mcp import OpenMetadataMCPClient
 logger = logging.getLogger(__name__)
 
 
+class ToolNameWrapper:
+    """Wrapper providing .value attribute for AISdk tool calls without private imports."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str):
+            return self.value == other
+        return getattr(other, "value", str(other)) == self.value
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __repr__(self) -> str:
+        return repr(self.value)
+
+
 class OpenMetadataGateway:
     """Gateway interfacing with OpenMetadata via official AI SDK / MCP with explicit fallback."""
 
@@ -57,6 +78,9 @@ class OpenMetadataGateway:
         if self._fallback_mcp:
             self._fallback_mcp.close()
 
+    def _call_sdk_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        return self._sdk.mcp.call_tool(ToolNameWrapper(tool_name), arguments)
+
     def get_entity_context(
         self,
         *,
@@ -68,10 +92,8 @@ class OpenMetadataGateway:
         if self._sdk is not None:
             try:
                 self.active_transport = "official_sdk"
-                details_res = self._sdk.mcp.call_tool(
-                    "get_entity_details",
-                    {"entity_type": entity_type, "fqn": entity_fqn},
-                )
+                args = {"entity_type": entity_type, "fqn": entity_fqn}
+                details_res = self._call_sdk_mcp_tool("get_entity_details", args)
                 details = (
                     details_res.data if hasattr(details_res, "data") and details_res.data is not None
                     else (details_res.get("data") if isinstance(details_res, dict) and "data" in details_res else details_res)
@@ -79,10 +101,7 @@ class OpenMetadataGateway:
 
                 context = {"details": details}
                 if include_lineage:
-                    lineage_res = self._sdk.mcp.call_tool(
-                        "get_entity_lineage",
-                        {"entity_type": entity_type, "fqn": entity_fqn},
-                    )
+                    lineage_res = self._call_sdk_mcp_tool("get_entity_lineage", args)
                     lineage = (
                         lineage_res.data if hasattr(lineage_res, "data") and lineage_res.data is not None
                         else (lineage_res.get("data") if isinstance(lineage_res, dict) and "data" in lineage_res else lineage_res)
@@ -102,13 +121,32 @@ class OpenMetadataGateway:
         )
 
     def get_taxonomies(self) -> list[str]:
-        """Fetch actual existing classification tag FQNs from OpenMetadata via MCP tool search."""
+        """Fetch actual existing classification tag FQNs from OpenMetadata.
+
+        Per verified OpenMetadata contract:
+        - Primary path uses official SDK / OpenMetadata host with native Tag API (/api/v1/tags).
+        - Fallback path uses fallback HTTP client with native Tag API.
+        - Malformed/unexpected responses or failures fail closed and return [].
+        """
+        import httpx
+
+        base_url = self.endpoint.rsplit("/mcp", 1)[0].rstrip("/")
+        tags_url = f"{base_url}/api/v1/tags?limit=1000"
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
         raw_data = None
         if self._sdk is not None:
             try:
                 self.active_transport = "official_sdk"
-                res = self._sdk.mcp.call_tool("search_metadata", {"query": "*", "entity_type": "tag"})
-                raw_data = res.data if hasattr(res, "data") and res.data is not None else res
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.get(tags_url, headers=headers)
+                    if resp.status_code == 200:
+                        raw_data = resp.json()
+                    else:
+                        logger.warning(f"Official SDK native taxonomy HTTP error: {resp.status_code}")
+                        self.active_transport = "fallback"
             except Exception as exc:
                 logger.warning(f"Official SDK get_taxonomies call failed: {exc}")
                 self.active_transport = "fallback"
@@ -116,29 +154,37 @@ class OpenMetadataGateway:
         if raw_data is None:
             try:
                 self.active_transport = "fallback"
-                raw_data = self._fallback_mcp.call_tool("search_metadata", {"query": "*", "entity_type": "tag"})
+                if self._fallback_mcp and hasattr(self._fallback_mcp, "client"):
+                    resp = self._fallback_mcp.client.get(tags_url, headers=headers)
+                    if resp.status_code == 200:
+                        raw_data = resp.json()
+                    else:
+                        logger.warning(f"Fallback MCP native taxonomy HTTP error: {resp.status_code}")
+                        return []
+                else:
+                    return []
             except Exception as exc:
                 logger.warning(f"Fallback MCP get_taxonomies call failed: {exc}")
                 return []
 
+        if not raw_data or not isinstance(raw_data, dict):
+            return []
+
         tags: list[str] = []
-        if isinstance(raw_data, dict):
-            hits = raw_data.get("hits", []) or raw_data.get("results", []) or raw_data.get("data", [])
-            for hit in hits:
-                if isinstance(hit, dict):
-                    fqn = hit.get("fullyQualifiedName") or hit.get("fqn") or hit.get("name")
-                    if fqn:
-                        tags.append(str(fqn))
-                elif isinstance(hit, str):
-                    tags.append(hit)
-        elif isinstance(raw_data, list):
-            for item in raw_data:
+        try:
+            items = raw_data.get("data")
+            if not isinstance(items, list):
+                return []
+            for item in items:
                 if isinstance(item, dict):
                     fqn = item.get("fullyQualifiedName") or item.get("fqn") or item.get("name")
-                    if fqn:
-                        tags.append(str(fqn))
+                    if fqn and isinstance(fqn, str):
+                        tags.append(fqn)
                 elif isinstance(item, str):
                     tags.append(item)
+        except Exception as exc:
+            logger.warning(f"Failed to parse taxonomy response: {exc}")
+            return []
 
         return tags
 

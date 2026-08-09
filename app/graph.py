@@ -8,9 +8,12 @@ Per R6-A final correctness requirements:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+
+logger = logging.getLogger(__name__)
 
 from app.classifier import PolicyClassifier, StructuredClassifier
 from app.gateways.governance import GovernanceGateway
@@ -40,13 +43,17 @@ def compute_effective_allowed_tags(
     actual_om_tags: list[str],
     caller_allowed_tags: list[str],
 ) -> list[str]:
-    """Compute effective allowed tags via intersection of actual OM taxonomy and caller whitelist."""
-    if actual_om_tags and caller_allowed_tags:
+    """Compute effective allowed tags via intersection of actual OM taxonomy and caller whitelist.
+
+    OpenMetadata is authoritative for tag existence. Caller allowed_tags can ONLY restrict
+    OpenMetadata truth, never replace it.
+    """
+    if not actual_om_tags:
+        return []
+    if caller_allowed_tags:
         actual_set = set(actual_om_tags)
         return [tag for tag in caller_allowed_tags if tag in actual_set]
-    if actual_om_tags:
-        return actual_om_tags
-    return caller_allowed_tags
+    return list(actual_om_tags)
 
 
 def build_governance_graph(
@@ -80,7 +87,11 @@ def build_governance_graph(
         return {"governance_context": gov_info}
 
     def tag_reasoning(state: AgentState) -> AgentState:
-        actual_om_tags = om_gateway.get_taxonomies()
+        try:
+            actual_om_tags = om_gateway.get_taxonomies()
+        except Exception as exc:
+            logger.warning(f"Failed to fetch OM taxonomies in tag_reasoning: {exc}")
+            actual_om_tags = []
         caller_allowed = state.get("allowed_tags", [])
         effective_allowed = compute_effective_allowed_tags(actual_om_tags, caller_allowed)
 
