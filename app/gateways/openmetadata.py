@@ -120,73 +120,88 @@ class OpenMetadataGateway:
             include_lineage=include_lineage,
         )
 
+    def _fetch_tags_from_url(
+        self,
+        base_url: str,
+        headers: dict[str, str],
+        http_client: Any,
+    ) -> list[str] | None:
+        """Fetch all tags strictly parsing data[].fullyQualifiedName with pagination."""
+        tags: list[str] = []
+        after_cursor: str | None = None
+        while True:
+            url = f"{base_url}/api/v1/tags?limit=100"
+            if after_cursor:
+                url += f"&after={after_cursor}"
+            resp = http_client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return None
+            try:
+                raw_data = resp.json()
+            except Exception:
+                return None
+            if not isinstance(raw_data, dict):
+                return None
+            items = raw_data.get("data")
+            if not isinstance(items, list):
+                return None
+            for item in items:
+                if isinstance(item, dict):
+                    fqn = item.get("fullyQualifiedName")
+                    if isinstance(fqn, str) and fqn.strip():
+                        tags.append(fqn.strip())
+                # Strictly ignore string items, 'name' fallbacks, or 'fqn' fallbacks
+
+            paging = raw_data.get("paging")
+            if isinstance(paging, dict) and isinstance(paging.get("after"), str) and paging.get("after"):
+                after_cursor = paging["after"]
+            else:
+                after_cursor = None
+
+            if not after_cursor:
+                break
+        return tags
+
     def get_taxonomies(self) -> list[str]:
-        """Fetch actual existing classification tag FQNs from OpenMetadata.
+        """Fetch actual existing classification tag FQNs from OpenMetadata via native Tags API.
 
         Per verified OpenMetadata contract:
-        - Primary path uses official SDK / OpenMetadata host with native Tag API (/api/v1/tags).
-        - Fallback path uses fallback HTTP client with native Tag API.
+        - Primary path uses native Tags API (/api/v1/tags) with paging.after pagination.
+        - Strictly parses data[].fullyQualifiedName (ignores name, fqn, or string items).
+        - Fallback path uses fallback HTTP client with native Tags API.
         - Malformed/unexpected responses or failures fail closed and return [].
         """
         import httpx
 
         base_url = self.endpoint.rsplit("/mcp", 1)[0].rstrip("/")
-        tags_url = f"{base_url}/api/v1/tags?limit=1000"
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        raw_data = None
         if self._sdk is not None:
             try:
-                self.active_transport = "official_sdk"
                 with httpx.Client(timeout=self.timeout) as client:
-                    resp = client.get(tags_url, headers=headers)
-                    if resp.status_code == 200:
-                        raw_data = resp.json()
+                    tags = self._fetch_tags_from_url(base_url, headers, client)
+                    if tags is not None:
+                        self.active_transport = "native_api"
+                        return tags
                     else:
-                        logger.warning(f"Official SDK native taxonomy HTTP error: {resp.status_code}")
+                        logger.warning("Primary native taxonomy request failed or returned non-200")
                         self.active_transport = "fallback"
             except Exception as exc:
-                logger.warning(f"Official SDK get_taxonomies call failed: {exc}")
+                logger.warning(f"Primary native taxonomy call failed: {exc}")
                 self.active_transport = "fallback"
 
-        if raw_data is None:
-            try:
-                self.active_transport = "fallback"
-                if self._fallback_mcp and hasattr(self._fallback_mcp, "client"):
-                    resp = self._fallback_mcp.client.get(tags_url, headers=headers)
-                    if resp.status_code == 200:
-                        raw_data = resp.json()
-                    else:
-                        logger.warning(f"Fallback MCP native taxonomy HTTP error: {resp.status_code}")
-                        return []
-                else:
-                    return []
-            except Exception as exc:
-                logger.warning(f"Fallback MCP get_taxonomies call failed: {exc}")
-                return []
-
-        if not raw_data or not isinstance(raw_data, dict):
-            return []
-
-        tags: list[str] = []
         try:
-            items = raw_data.get("data")
-            if not isinstance(items, list):
-                return []
-            for item in items:
-                if isinstance(item, dict):
-                    fqn = item.get("fullyQualifiedName") or item.get("fqn") or item.get("name")
-                    if fqn and isinstance(fqn, str):
-                        tags.append(fqn)
-                elif isinstance(item, str):
-                    tags.append(item)
+            self.active_transport = "fallback"
+            if self._fallback_mcp and hasattr(self._fallback_mcp, "client"):
+                tags = self._fetch_tags_from_url(base_url, headers, self._fallback_mcp.client)
+                if tags is not None:
+                    return tags
         except Exception as exc:
-            logger.warning(f"Failed to parse taxonomy response: {exc}")
-            return []
+            logger.warning(f"Fallback native taxonomy call failed: {exc}")
 
-        return tags
+        return []
 
     def apply_tag_authoritative(
         self,
