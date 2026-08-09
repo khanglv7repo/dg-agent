@@ -1,0 +1,192 @@
+# ============================================================
+# Data Governance Platform
+# Root .gitignore for governance_app + phase1-e2e-tests
+# ============================================================
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+*__pycache__/
+
+
+data/
+
+# Python build / packaging
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments / Conda
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.conda/
+conda-meta/
+
+
+
+# Test / coverage / lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.cache/
+
+# Environment files / secrets
+.env
+.env.*
+!.env.example
+*.env.local
+*.secret
+*.secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.token
+.tokens
+auth.json
+credentials.json
+
+# Databases / local state
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+governance.db
+governance.db-*
+postgres-data/
+pgdata/
+
+# Logs / runtime evidence
+*.log
+logs/
+log/
+.phase1-test-logs/
+.phase1-flow-logs/
+.phase1-e2e/
+phase1-e2e-tests/logs/
+phase1-e2e-tests/evidence/
+phase1-e2e-tests/results/
+phase1-e2e-tests/.runs/
+phase1-e2e-tests/.state/
+*.jsonl
+status.json
+evidence.json
+summary.tsv
+result.env
+
+# Keep committed project documentation
+!phase1-e2e-tests/VALIDATION_REPORT.md
+!phase1-e2e-tests/TODO.md
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+
+# Runtime-generated Faker/test fixtures
+phase1-e2e-tests/fixtures/generated/
+phase1-e2e-tests/generated/
+phase1-e2e-tests/runtime/
+
+# Policy-as-code transient output
+policy_as_code/.cache/
+policy_as_code/.work/
+policy_as_code/diffs/
+policy_as_code/reports/
+
+# Do NOT ignore deployment YAML:
+# governance_app/config/classification_rules.yaml
+# governance_app/config/data_value_scan.yaml
+# governance_app/config/policies.yaml
+# policy_as_code/generated/*.yaml
+
+# IDE / editor
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker / local runtime
+docker-compose.override.yml
+compose.override.yml
+*.pid
+*.pid.lock
+
+# Generated archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Generated project inspection files
+tree.txt
+PROJECT_TREE.txt
+
+# Local shell history / command outputs
+.history/
+bash_history
+zsh_history
+nohup.out

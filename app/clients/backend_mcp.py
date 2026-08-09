@@ -4,13 +4,10 @@ Per 05-ai-agent-and-mcp.md, the AI Agent connects to Backend FastMCP over the in
 Docker network (or localhost in dev) to access controlled read-only capabilities:
 - Ranger state inspection (`inspect_ranger_state`)
 - Bounded read-only Trino diagnostics (`query_trino_readonly`)
-- Governance policy inspection (`inspect_policy_state`)
-- Submitting approved policy commands (`submit_policy_command`)
 """
 from __future__ import annotations
 
 import itertools
-import json
 from typing import Any
 
 import httpx
@@ -19,8 +16,6 @@ ALLOWED_BACKEND_TOOLS = frozenset(
     {
         "inspect_ranger_state",
         "query_trino_readonly",
-        "inspect_policy_state",
-        "submit_policy_command",
     }
 )
 
@@ -71,15 +66,4 @@ class BackendMCPClient:
         return self.call_tool(
             "query_trino_readonly",
             {"query": query, "username": username, "limit": limit},
-        )
-
-    def inspect_policy_state(self) -> dict[str, Any]:
-        return self.call_tool("inspect_policy_state")
-
-    def submit_policy_command(
-        self, command_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        return self.call_tool(
-            "submit_policy_command",
-            {"command_id": command_id, "payload": payload},
         )
