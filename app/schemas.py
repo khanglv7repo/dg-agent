@@ -1,3 +1,10 @@
+"""Domain models for TAG and POLICY reasoning.
+
+Per R6-A final correctness requirements:
+- Policy proposal resource uses catalog, schema, table semantics (catalog replaces legacy database field).
+- Access intent represents operation -> ALLOW | DENY mapping (e.g. {'select': 'ALLOW', 'insert': 'DENY'}).
+- openmetadata_suggestion_ids is explicitly marked as deprecated/legacy for backward compatibility.
+"""
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -40,24 +47,29 @@ class Subject(BaseModel):
 
 
 class PolicyResource(BaseModel):
-    database: str = Field(min_length=1, max_length=255, description="Catalog / database name")
-    schema_name: str = Field(min_length=1, max_length=255, description="Schema name")
+    catalog: str = Field(min_length=1, max_length=255, description="Catalog name e.g. service / lakehouse")
+    schema_name: str = Field(alias="schema", min_length=1, max_length=255, description="Schema name")
     table: str = Field(min_length=1, max_length=255, description="Table name")
+
+    model_config = {"populate_by_name": True}
 
 
 class ColumnMask(BaseModel):
     column: str = Field(min_length=1, max_length=255)
-    mask_type: str = Field(min_length=1, max_length=64, description="Mask intent e.g., MASK_HASH, MASK_NULL, MASK_SHOW_LAST_4")
+    mask_type: str = Field(min_length=1, max_length=64, description="Logical mask intent e.g. MASK_HASH, MASK_NULL, MASK_SHOW_LAST_4")
 
 
 class RowFilter(BaseModel):
-    expression: str | None = Field(default=None, description="Row filter SQL expression or null")
+    expression: str | None = Field(default=None, description="Logical row filter SQL expression or null")
 
 
 class LogicalPolicyProposal(BaseModel):
     subjects: list[Subject] = Field(min_length=1)
     resource: PolicyResource
-    access: list[str] = Field(default_factory=lambda: ["SELECT"], description="Logical access intents e.g. ['SELECT']")
+    access: dict[str, Literal["ALLOW", "DENY"]] = Field(
+        default_factory=lambda: {"select": "ALLOW"},
+        description="Logical access operations mapped to ALLOW or DENY e.g. {'select': 'ALLOW', 'insert': 'DENY'}",
+    )
     masks: list[ColumnMask] = Field(default_factory=list)
     row_filter: RowFilter | None = Field(default=None)
 
@@ -92,5 +104,7 @@ class AgentRunResponse(BaseModel):
     decision: AgentDecision = Field(default_factory=AgentDecision)  # Backward compatibility field
     tag_result: TagReasoningResult | None = None
     policy_result: PolicyReasoningResult | None = None
-    openmetadata_suggestion_ids: list[str] = Field(default_factory=list)
-
+    openmetadata_suggestion_ids: list[str] = Field(
+        default_factory=list,
+        description="Deprecated/legacy field preserved for backward compatibility; not used in primary TAG/POLICY flow.",
+    )

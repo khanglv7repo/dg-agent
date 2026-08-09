@@ -15,6 +15,7 @@ dependencies = [
     "langchain-core>=0.3",
     "langchain-openai>=0.1",
     "python-dotenv>=1.0",
+    "data-ai-sdk>=0.2.0,<0.3.0",
 ]
 
 [project.optional-dependencies]

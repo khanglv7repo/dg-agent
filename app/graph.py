@@ -1,13 +1,14 @@
 """LangGraph orchestration graph for AI Agent.
 
-Per R6-A requirements:
+Per R6-A final correctness requirements:
 - Explicit split between TAG reasoning and POLICY reasoning.
-- Typed state and deterministic graph nodes.
+- Effective allowed tag set intersects actual OpenMetadata taxonomy with caller whitelist.
+- Any LLM tag proposal not in the effective allowed set is strictly removed.
 - Transport clients (OpenMetadataGateway, GovernanceGateway) decoupled from reasoning nodes.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -15,11 +16,8 @@ from app.classifier import PolicyClassifier, StructuredClassifier
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
 from app.schemas import (
-    AgentDecision,
-    AgentTagSuggestion,
     PolicyReasoningResult,
     Subject,
-    TagRecommendation,
     TagReasoningResult,
 )
 
@@ -36,6 +34,19 @@ class AgentState(TypedDict, total=False):
     governance_context: dict[str, Any]
     tag_result: dict[str, Any]
     policy_result: dict[str, Any]
+
+
+def compute_effective_allowed_tags(
+    actual_om_tags: list[str],
+    caller_allowed_tags: list[str],
+) -> list[str]:
+    """Compute effective allowed tags via intersection of actual OM taxonomy and caller whitelist."""
+    if actual_om_tags and caller_allowed_tags:
+        actual_set = set(actual_om_tags)
+        return [tag for tag in caller_allowed_tags if tag in actual_set]
+    if actual_om_tags:
+        return actual_om_tags
+    return caller_allowed_tags
 
 
 def build_governance_graph(
@@ -69,14 +80,18 @@ def build_governance_graph(
         return {"governance_context": gov_info}
 
     def tag_reasoning(state: AgentState) -> AgentState:
-        allowed_tags = state.get("allowed_tags", [])
+        actual_om_tags = om_gateway.get_taxonomies()
+        caller_allowed = state.get("allowed_tags", [])
+        effective_allowed = compute_effective_allowed_tags(actual_om_tags, caller_allowed)
+
         raw_result = tag_classifier.classify(
             catalog_context=state.get("catalog_context", {}),
-            allowed_tags=allowed_tags,
+            allowed_tags=effective_allowed,
         )
-        allowed_set = set(allowed_tags)
-        # Strict validation: filter out any suggested tags not in allowed_tags FQNs
-        filtered_recs = [rec for rec in raw_result.recommendations if rec.tag in allowed_set]
+
+        effective_set = set(effective_allowed)
+        # Strict validation: filter out any suggested tags not in effective allowed set
+        filtered_recs = [rec for rec in raw_result.recommendations if rec.tag in effective_set]
         raw_result.recommendations = filtered_recs
         return {"tag_result": raw_result.model_dump(mode="json")}
 
@@ -107,8 +122,6 @@ def build_governance_graph(
         },
     )
 
-    # Route TAG path: load_om_context -> tag_reasoning -> END
-    # Route POLICY path: load_om_context -> load_governance_context -> policy_reasoning -> END
     def after_om_context(state: AgentState) -> str:
         req_type = (state.get("request_type") or "TAG").upper()
         if req_type == "POLICY":

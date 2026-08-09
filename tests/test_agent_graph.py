@@ -20,6 +20,7 @@ def test_agent_graph_tag_execution() -> None:
         "details": {"name": "customer_table", "columns": [{"name": "email"}]},
         "lineage": {},
     }
+    om_mock.get_taxonomies.return_value = ["PII.Email", "PII.Phone"]
 
     gov_mock = MagicMock(spec=GovernanceGateway)
 
@@ -77,8 +78,8 @@ def test_agent_graph_policy_execution() -> None:
     policy_classifier_mock.reason_policy.return_value = PolicyReasoningResult(
         proposal=LogicalPolicyProposal(
             subjects=[Subject(subject_type="GROUP", name="analytics")],
-            resource=PolicyResource(database="service", schema_name="db", table="customer_table"),
-            access=["SELECT"],
+            resource=PolicyResource(catalog="service", schema="db", table="customer_table"),
+            access={"select": "ALLOW"},
             masks=[],
             row_filter=None,
         ),
