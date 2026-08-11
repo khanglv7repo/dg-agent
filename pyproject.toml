@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "governance_agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "OpenMetadata-native standalone AI Agent project using LangGraph and MCP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,8 @@ dependencies = [
     "langchain-openai>=0.1",
     "python-dotenv>=1.0",
     "data-ai-sdk>=0.2.0,<0.3.0",
+    "fastmcp>=2.14.7,<2.15",
+    "celery[redis]>=5.4,<6",
 ]
 
 [project.optional-dependencies]

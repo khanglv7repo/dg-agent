@@ -1,24 +1,16 @@
-"""Domain models for TAG and POLICY reasoning.
-
-Per R6-A final correctness requirements:
-- Policy proposal resource uses catalog, schema, table semantics (catalog replaces legacy database field).
-- Access intent represents operation -> ALLOW | DENY mapping (e.g. {'select': 'ALLOW', 'insert': 'DENY'}).
-- openmetadata_suggestion_ids is explicitly marked as deprecated/legacy for backward compatibility.
-"""
+"""Domain models for TAG and POLICY reasoning."""
 from __future__ import annotations
 
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-# --- TAG DOMAIN SCHEMAS ---
-
 class TagRecommendation(BaseModel):
-    tag: str = Field(description="Fully qualified name of the recommended tag (must be in allowed_tags)")
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score from 0.0 to 1.0")
-    rationale: str = Field(min_length=1, max_length=2000, description="Concise rationale citing metadata evidence")
-    field_path: str | None = Field(default=None, max_length=1024, description="Target column FQN or None for entity level")
-    action_recommendation: str = Field(default="APPLY", description="Action recommendation e.g. APPLY, REVIEW, NO_ACTION")
+    tag: str = Field(description="Fully qualified tag name verified against OpenMetadata")
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1, max_length=2000)
+    field_path: str | None = Field(default=None, max_length=1024)
+    action_recommendation: Literal["APPLY", "REVIEW", "NO_ACTION"] = "APPLY"
 
 
 class TagReasoningResult(BaseModel):
@@ -26,7 +18,6 @@ class TagReasoningResult(BaseModel):
     summary: str = Field(default="", max_length=4000)
 
 
-# Backward-compatibility aliases for legacy code
 class AgentTagSuggestion(BaseModel):
     tag: str
     confidence: float = Field(ge=0, le=1)
@@ -39,53 +30,56 @@ class AgentDecision(BaseModel):
     summary: str = Field(default="", max_length=4000)
 
 
-# --- POLICY DOMAIN SCHEMAS ---
-
 class Subject(BaseModel):
-    subject_type: Literal["USER", "GROUP"] = Field(description="Subject category: USER or GROUP")
-    name: str = Field(min_length=1, max_length=255, description="Username or group name")
+    subject_type: Literal["USER", "GROUP"]
+    name: str = Field(min_length=1, max_length=255)
 
 
 class PolicyResource(BaseModel):
-    catalog: str = Field(min_length=1, max_length=255, description="Catalog name e.g. service / lakehouse")
-    schema_name: str = Field(alias="schema", min_length=1, max_length=255, description="Schema name")
-    table: str = Field(min_length=1, max_length=255, description="Table name")
+    catalog: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(alias="schema", min_length=1, max_length=255)
+    table: str = Field(min_length=1, max_length=255)
 
     model_config = {"populate_by_name": True}
 
 
 class ColumnMask(BaseModel):
     column: str = Field(min_length=1, max_length=255)
-    mask_type: str = Field(min_length=1, max_length=64, description="Logical mask intent e.g. MASK_HASH, MASK_NULL, MASK_SHOW_LAST_4")
+    mask_type: Literal["MASK"] = Field(
+        default="MASK",
+        description="Frozen Backend R5 supports exactly logical mask intent MASK",
+    )
 
 
 class RowFilter(BaseModel):
-    expression: str | None = Field(default=None, description="Logical row filter SQL expression or null")
+    expression: str | None = None
 
 
 class LogicalPolicyProposal(BaseModel):
     subjects: list[Subject] = Field(min_length=1)
     resource: PolicyResource
     access: dict[str, Literal["ALLOW", "DENY"]] = Field(
-        default_factory=lambda: {"select": "ALLOW"},
-        description="Logical access operations mapped to ALLOW or DENY e.g. {'select': 'ALLOW', 'insert': 'DENY'}",
+        default_factory=lambda: {"select": "ALLOW"}
     )
     masks: list[ColumnMask] = Field(default_factory=list)
-    row_filter: RowFilter | None = Field(default=None)
+    row_filter: RowFilter | None = None
 
 
 class PolicyReasoningResult(BaseModel):
-    proposal: LogicalPolicyProposal | None = Field(default=None)
+    proposal: LogicalPolicyProposal | None = None
     rationale: str = Field(min_length=1, max_length=2000)
     expected_impact: str = Field(default="", max_length=2000)
     confidence: float = Field(ge=0.0, le=1.0, default=1.0)
     warnings: list[str] = Field(default_factory=list)
+    backend_context: dict[str, Any] = Field(default_factory=dict)
+    backend_logical_policy: dict[str, Any] | None = None
+    conflict: dict[str, Any] | None = None
+    preview: dict[str, Any] | None = None
+    draft: dict[str, Any] | None = None
 
-
-# --- ORCHESTRATION / RUNNER SCHEMAS ---
 
 class AgentRunRequest(BaseModel):
-    request_type: Literal["TAG", "POLICY"] = Field(default="TAG", description="Explicit reasoning domain: TAG or POLICY")
+    request_type: Literal["TAG", "POLICY"] = "TAG"
     event_id: str = Field(default="req-local", min_length=1, max_length=255)
     entity_type: str = Field(default="table", min_length=1, max_length=64)
     entity_fqn: str = Field(min_length=1, max_length=1024)
@@ -93,18 +87,20 @@ class AgentRunRequest(BaseModel):
     include_lineage: bool = True
     correlation_id: str | None = Field(default=None, max_length=128)
 
-    # Optional policy inputs
-    target_subjects: list[Subject] | None = Field(default=None)
+    target_subjects: list[Subject] | None = None
     policy_intent: str | None = Field(default=None, max_length=2000)
+    policy_key: str | None = Field(default=None, min_length=1, max_length=512)
+    persist_draft: bool = False
+    environment: str = Field(default="local", min_length=1, max_length=64)
 
 
 class AgentRunResponse(BaseModel):
     status: str
     request_type: str = "TAG"
-    decision: AgentDecision = Field(default_factory=AgentDecision)  # Backward compatibility field
+    decision: AgentDecision = Field(default_factory=AgentDecision)
     tag_result: TagReasoningResult | None = None
     policy_result: PolicyReasoningResult | None = None
     openmetadata_suggestion_ids: list[str] = Field(
         default_factory=list,
-        description="Deprecated/legacy field preserved for backward compatibility; not used in primary TAG/POLICY flow.",
+        description="Deprecated legacy field; not used by authoritative R6-B flow.",
     )

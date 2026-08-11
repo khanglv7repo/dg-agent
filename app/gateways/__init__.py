@@ -1,7 +1,11 @@
-"""Gateways for external integration boundaries (OpenMetadata AI SDK/MCP and Backend Governance MCP)."""
-from __future__ import annotations
-
-from app.gateways.openmetadata import OpenMetadataGateway
+"""External integration boundaries."""
+from app.clients.backend_mcp import BackendMCPError
 from app.gateways.governance import GovernanceGateway
+from app.gateways.openmetadata import OpenMetadataGateway, OpenMetadataMutationError
 
-__all__ = ["OpenMetadataGateway", "GovernanceGateway"]
+__all__ = [
+    "BackendMCPError",
+    "GovernanceGateway",
+    "OpenMetadataGateway",
+    "OpenMetadataMutationError",
+]
