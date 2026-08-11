@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import os
-
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.classifier import OpenAIPolicyClassifier, OpenAIStructuredClassifier
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
 from app.graph import run_governance_graph
+from app.llm_runtime import LLMRuntimeConfig
 from app.schemas import (
     AgentDecision,
     AgentRunRequest,
@@ -27,10 +26,15 @@ class GovernanceAgentRunner:
             "BACKEND_MCP_URL", "http://127.0.0.1:8001/mcp"
         )
         self.agent_bot_token = os.getenv("OPENMETADATA_AGENT_BOT_TOKEN", "")
-        self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-        self.llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-        self.llm_base_url = os.getenv("LLM_BASE_URL") or None
         self.environment = os.getenv("GOVERNANCE_ENVIRONMENT", "local")
+
+        # One canonical LLM config is shared with the Celery worker path.
+        self.llm_config = LLMRuntimeConfig.from_env()
+
+        # Compatibility attributes retained for existing diagnostics/tests.
+        self.llm_api_key = self.llm_config.api_key
+        self.llm_model = self.llm_config.model
+        self.llm_base_url = self.llm_config.base_url
 
     def run(self, request: AgentRunRequest) -> AgentRunResponse:
         om_gateway = OpenMetadataGateway(
@@ -38,16 +42,8 @@ class GovernanceAgentRunner:
             token=self.agent_bot_token,
         )
         gov_gateway = GovernanceGateway(endpoint=self.backend_mcp_url)
-        tag_classifier = OpenAIStructuredClassifier(
-            model=self.llm_model,
-            api_key=self.llm_api_key,
-            base_url=self.llm_base_url,
-        )
-        policy_classifier = OpenAIPolicyClassifier(
-            model=self.llm_model,
-            api_key=self.llm_api_key,
-            base_url=self.llm_base_url,
-        )
+        tag_classifier = self.llm_config.tag_classifier()
+        policy_classifier = self.llm_config.policy_classifier()
         try:
             tag_result, policy_result, _context = run_governance_graph(
                 om_gateway=om_gateway,

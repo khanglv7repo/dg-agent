@@ -5,9 +5,9 @@ import os
 from typing import Any
 
 from app.celery_app import app
-from app.classifier import OpenAIStructuredClassifier
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
+from app.llm_runtime import LLMRuntimeConfig
 from app.services.classification_worker import ClassificationWorkerService
 
 
@@ -30,13 +30,15 @@ def ai_classify_entity(
         endpoint=os.getenv("OPENMETADATA_MCP_URL", "http://localhost:8585/mcp"),
         token=os.getenv("OPENMETADATA_AGENT_BOT_TOKEN", ""),
     )
-    classifier = OpenAIStructuredClassifier(
-        model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
-        api_key=os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
-        base_url=os.getenv("LLM_BASE_URL") or None,
-    )
+
+    # IMPORTANT: the worker uses the same Responses API / structured-output
+    # configuration as GovernanceAgentRunner. Do not duplicate provider options here.
+    classifier = LLMRuntimeConfig.from_env().tag_classifier()
+
     try:
-        # No production completion callback exists in frozen Backend R5.
+        # Backend completion is intentionally still absent at this checkpoint.
+        # R6-B real-LLM reasoning may run, but ClassificationWorkerService fails
+        # safe before authoritative OM mutation until the Backend callback exists.
         service = ClassificationWorkerService(
             governance=governance,
             openmetadata=openmetadata,

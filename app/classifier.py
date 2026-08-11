@@ -42,6 +42,35 @@ class PolicyClassifier(Protocol):
     ) -> PolicyReasoningResult: ...
 
 
+def _build_structured_llm(
+    *,
+    model: str,
+    api_key: str | None,
+    base_url: str | None,
+    use_responses_api: bool,
+    structured_output_method: str | None,
+    schema: type,
+):
+    if ChatOpenAI is None:
+        raise RuntimeError("langchain-openai package is missing")
+
+    options: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "temperature": 0,
+    }
+    if base_url:
+        options["base_url"] = base_url
+    if use_responses_api:
+        options["use_responses_api"] = True
+
+    llm = ChatOpenAI(**options)
+    structured_options: dict[str, Any] = {}
+    if structured_output_method:
+        structured_options["method"] = structured_output_method
+    return llm.with_structured_output(schema, **structured_options)
+
+
 class OpenAIStructuredClassifier:
     def __init__(
         self,
@@ -50,19 +79,19 @@ class OpenAIStructuredClassifier:
         api_key: str | None,
         base_url: str | None = None,
         prompt_version: str = "v3",
+        use_responses_api: bool = False,
+        structured_output_method: str | None = None,
     ) -> None:
-        if ChatOpenAI is None:
-            raise RuntimeError("langchain-openai package is missing")
         self.model_name = model
         self.prompt_version = prompt_version
-        options: dict[str, Any] = {
-            "model": model,
-            "api_key": api_key,
-            "temperature": 0,
-        }
-        if base_url:
-            options["base_url"] = base_url
-        self._llm = ChatOpenAI(**options).with_structured_output(TagReasoningResult)
+        self._llm = _build_structured_llm(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            use_responses_api=use_responses_api,
+            structured_output_method=structured_output_method,
+            schema=TagReasoningResult,
+        )
 
     def classify(
         self,
@@ -94,19 +123,19 @@ class OpenAIPolicyClassifier:
         api_key: str | None,
         base_url: str | None = None,
         prompt_version: str = "v2",
+        use_responses_api: bool = False,
+        structured_output_method: str | None = None,
     ) -> None:
-        if ChatOpenAI is None:
-            raise RuntimeError("langchain-openai package is missing")
         self.model_name = model
         self.prompt_version = prompt_version
-        options: dict[str, Any] = {
-            "model": model,
-            "api_key": api_key,
-            "temperature": 0,
-        }
-        if base_url:
-            options["base_url"] = base_url
-        self._llm = ChatOpenAI(**options).with_structured_output(PolicyReasoningResult)
+        self._llm = _build_structured_llm(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            use_responses_api=use_responses_api,
+            structured_output_method=structured_output_method,
+            schema=PolicyReasoningResult,
+        )
 
     def reason_policy(
         self,
