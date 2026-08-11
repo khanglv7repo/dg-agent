@@ -1,4 +1,4 @@
-"""Exact consumer task for Backend R3/R5 ai.classification handoff."""
+"""Exact consumer task for Backend R3/R6-B ai.classification handoff."""
 from __future__ import annotations
 
 import os
@@ -8,6 +8,7 @@ from app.celery_app import app
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
 from app.llm_runtime import LLMRuntimeConfig
+from app.services.classification_completion import BackendClassificationCompletionChannel
 from app.services.classification_worker import ClassificationWorkerService
 
 
@@ -31,24 +32,19 @@ def ai_classify_entity(
         token=os.getenv("OPENMETADATA_AGENT_BOT_TOKEN", ""),
     )
 
-    # IMPORTANT: the worker uses the same Responses API / structured-output
-    # configuration as GovernanceAgentRunner. Do not duplicate provider options here.
+    # The worker uses the same Responses API / structured-output configuration
+    # as GovernanceAgentRunner. Do not duplicate provider options here.
     classifier = LLMRuntimeConfig.from_env().tag_classifier()
+    completion = BackendClassificationCompletionChannel(governance)
 
     try:
-        # Backend completion is intentionally still absent at this checkpoint.
-        # R6-B real-LLM reasoning may run, but ClassificationWorkerService fails
-        # safe before authoritative OM mutation until the Backend callback exists.
         service = ClassificationWorkerService(
             governance=governance,
             openmetadata=openmetadata,
             classifier=classifier,
-            completion=None,
+            completion=completion,
         )
-        return service.handle(
-            execution_id=execution_id,
-            generation=generation,
-        )
+        return service.handle(execution_id=execution_id, generation=generation)
     finally:
         openmetadata.close()
         governance.close()

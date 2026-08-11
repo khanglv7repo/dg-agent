@@ -1,4 +1,8 @@
-"""Typed transport client for the frozen R5 Backend FastMCP server."""
+"""Typed transport client for the Backend FastMCP contract.
+
+R5's 15-tool inventory remains explicitly frozen for compatibility. R6-B extends
+that contract by exactly one bounded completion tool.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +29,10 @@ EXPECTED_BACKEND_TOOLS = (
     "update_service_mapping",
     "request_ranger_sync",
 )
-ALLOWED_BACKEND_TOOLS = frozenset(EXPECTED_BACKEND_TOOLS)
+R6B_BACKEND_TOOLS = EXPECTED_BACKEND_TOOLS + (
+    "complete_classification_execution",
+)
+ALLOWED_BACKEND_TOOLS = frozenset(R6B_BACKEND_TOOLS)
 
 
 class BackendMCPError(RuntimeError):
@@ -173,20 +180,42 @@ class BackendMCPClient:
     def list_tools(self) -> list[dict[str, Any]]:
         return list(self.probe()["tools"])
 
-    def validate_frozen_contract(self) -> dict[str, Any]:
-        probe = self.probe()
+    @staticmethod
+    def _validate_inventory(
+        probe: dict[str, Any],
+        *,
+        expected: tuple[str, ...],
+        contract_name: str,
+    ) -> dict[str, Any]:
         actual = [item["name"] for item in probe["tools"]]
-        if actual != list(EXPECTED_BACKEND_TOOLS):
+        if actual != list(expected):
             raise BackendMCPError(
                 code="BACKEND_MCP_CONTRACT_MISMATCH",
-                message="Backend MCP tool inventory does not match frozen R5 contract",
+                message=f"Backend MCP tool inventory does not match {contract_name} contract",
                 retryable=False,
                 details={
-                    "expected": list(EXPECTED_BACKEND_TOOLS),
+                    "contract": contract_name,
+                    "expected": list(expected),
                     "actual": actual,
                 },
             )
         return probe
+
+    def validate_frozen_contract(self) -> dict[str, Any]:
+        """Validate the historical frozen R5 15-tool inventory exactly."""
+        return self._validate_inventory(
+            self.probe(),
+            expected=EXPECTED_BACKEND_TOOLS,
+            contract_name="frozen R5",
+        )
+
+    def validate_r6b_contract(self) -> dict[str, Any]:
+        """Validate R6-B's deliberate one-tool extension of frozen R5."""
+        return self._validate_inventory(
+            self.probe(),
+            expected=R6B_BACKEND_TOOLS,
+            contract_name="R6-B",
+        )
 
     async def _call_tool_async(
         self,
