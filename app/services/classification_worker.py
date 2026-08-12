@@ -7,13 +7,30 @@ from app.classifier import StructuredClassifier
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
 
+# Must remain aligned with Backend R6-B ClassificationCompletionService.
+# Backend currently accepts at most 20 recommendations and 20 mutation records.
+MAX_COMPLETION_RECOMMENDATIONS = 20
+
+
+class ClassificationCompletionBoundError(RuntimeError):
+    """Fail-closed guard when Agent APPLY output cannot fit Backend completion."""
+
+    def __init__(
+        self,
+        *,
+        count: int,
+        limit: int = MAX_COMPLETION_RECOMMENDATIONS,
+    ) -> None:
+        self.count = int(count)
+        self.limit = int(limit)
+        super().__init__(
+            "R6-B APPLY recommendation count exceeds Backend completion limit: "
+            f"{self.count} > {self.limit}"
+        )
+
 
 class ClassificationCompletionChannel(Protocol):
-    """Future external Backend callback contract.
-
-    Frozen R5 does not provide a supported implementation. Production therefore
-    passes None and the worker stops fail-safe before authoritative OM mutation.
-    """
+    """Bounded Backend R6-B continuation for the same dispatched generation."""
 
     def complete(
         self,
@@ -97,6 +114,14 @@ class ClassificationWorkerService:
             if rec.action_recommendation == "APPLY" and rec.tag in allowed
         ]
 
+        # Cross-system invariant: never mutate more authoritative OM targets than
+        # Backend can durably accept in the same completion transaction.
+        # This guard deliberately runs before fence #2 and before the first OM write.
+        if len(apply_recommendations) > MAX_COMPLETION_RECOMMENDATIONS:
+            raise ClassificationCompletionBoundError(
+                count=len(apply_recommendations)
+            )
+
         # Mandatory immediate second stale-generation fence before any OM write.
         second = self.governance.get_workflow_status(execution_id)
         stale = self._fence(
@@ -113,9 +138,8 @@ class ClassificationWorkerService:
                 "om_mutation_count": 0,
             }
 
-        # R5 has no supported generation-fenced completion callback. Mutating OM
-        # without a durable completion channel would leave WAITING_AI stuck and
-        # invite retries. Fail safe before authority mutation.
+        # Production R6-B injects a generation-fenced Backend completion adapter.
+        # If it is absent, fail safe before authoritative OM mutation.
         if self.completion is None:
             return {
                 "status": "BLOCKED_COMPLETION_CHANNEL",
