@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.gateways.governance import GovernanceGateway
-from app.gateways.openmetadata import OpenMetadataGateway
+from app.gateways.openmetadata_context import OpenMetadataGateway
 from app.graph import run_governance_graph
 from app.llm_runtime import LLMRuntimeConfig
 from app.schemas import (

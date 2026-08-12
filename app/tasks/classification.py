@@ -6,7 +6,7 @@ from typing import Any
 
 from app.celery_app import app
 from app.gateways.governance import GovernanceGateway
-from app.gateways.openmetadata import OpenMetadataGateway
+from app.gateways.openmetadata_context import OpenMetadataGateway
 from app.llm_runtime import LLMRuntimeConfig
 from app.services.classification_completion import BackendClassificationCompletionChannel
 from app.services.classification_worker import ClassificationWorkerService
