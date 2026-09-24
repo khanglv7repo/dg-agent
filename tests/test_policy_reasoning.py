@@ -104,10 +104,13 @@ def test_policy_flow_preview_conflict_and_draft_without_activation() -> None:
     }
     assert result.draft["status"] == "DRAFT"
     gov.create_policy_version.assert_called_once()
-    gov.activate_policy_version.assert_not_called()
-    gov.rollback_policy.assert_not_called()
-    gov.update_service_mapping.assert_not_called()
-    gov.request_ranger_sync.assert_not_called()
+    for forbidden in (
+        "activate_policy_version",
+        "rollback_policy",
+        "update_service_mapping",
+        "request_ranger_sync",
+    ):
+        assert not hasattr(gov, forbidden)
 
     # TASK-09: I9 audit ref / frozen PolicyReasonCode on the DRAFT write boundary.
     assert result.reason_code == "DRAFT_CREATED"
