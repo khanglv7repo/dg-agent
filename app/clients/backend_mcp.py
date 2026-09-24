@@ -1,7 +1,7 @@
 """Typed transport client for the Backend FastMCP contract.
 
-R5's 15-tool inventory remains explicitly frozen for compatibility. R6-B extends
-that contract by exactly one bounded completion tool.
+The Agent is allowed only bounded read/diagnostic capabilities plus DRAFT creation.
+Authority-changing policy operations are intentionally absent.
 """
 from __future__ import annotations
 
@@ -24,20 +24,9 @@ EXPECTED_BACKEND_TOOLS = (
     "inspect_ranger_state",
     "query_trino_readonly",
     "create_policy_version",
-    "activate_policy_version",
-    "rollback_policy",
-    "update_service_mapping",
-    "request_ranger_sync",
-)
-R6B_BACKEND_TOOLS = EXPECTED_BACKEND_TOOLS + (
-    "complete_classification_execution",
-    # Confirmed present on the live Backend MCP server inventory
-    # (app/mcp/backend_mcp_server.py) but missing from this constant --
-    # fixed in TASK-08 Work Packet H per
-    # planning/03-CODE-EDIT-MANIFEST.md's Backend MCP row.
     "get_tag_sync_observability",
 )
-ALLOWED_BACKEND_TOOLS = frozenset(R6B_BACKEND_TOOLS)
+ALLOWED_BACKEND_TOOLS = frozenset(EXPECTED_BACKEND_TOOLS)
 
 
 class BackendMCPError(RuntimeError):
@@ -206,20 +195,12 @@ class BackendMCPClient:
             )
         return probe
 
-    def validate_frozen_contract(self) -> dict[str, Any]:
-        """Validate the historical frozen R5 15-tool inventory exactly."""
+    def validate_contract(self) -> dict[str, Any]:
+        """Validate the bounded Agent-facing Backend MCP inventory exactly."""
         return self._validate_inventory(
             self.probe(),
             expected=EXPECTED_BACKEND_TOOLS,
-            contract_name="frozen R5",
-        )
-
-    def validate_r6b_contract(self) -> dict[str, Any]:
-        """Validate R6-B's deliberate one-tool extension of frozen R5."""
-        return self._validate_inventory(
-            self.probe(),
-            expected=R6B_BACKEND_TOOLS,
-            contract_name="R6-B",
+            contract_name="bounded-agent",
         )
 
     async def _call_tool_async(
