@@ -1,4 +1,4 @@
-"""DQ TestCase write graph boundary (TASK-09 Work Packet D:
+"""DQ governance staging graph boundary (TASK-09 Work Packet D:
 "Route DQ through the selected B2/B3 writer; create dq_writer.py only when
 authorized" -- authorized per `docs/13_IMPLEMENTATION_SPEC.md`'s "DQ Writer
 (Agent) CONDITIONAL ADD" section, B2 PASS + B3 PASS).
@@ -7,7 +7,7 @@ Unlike TAG/POLICY, DQ has no LLM reasoning step in this graph -- the caller
 (a rule engine, a human-reviewed proposal, or a future classification-derived
 DQ suggestion) supplies the already-decided TestCase spec directly via
 `AgentState`'s dq_* fields. This graph's only job is the SPEC_DRAFT ->
-VALIDATED -> STAGED write boundary itself (`DQWriterService`), not judgment
+VALIDATED -> BACKEND_STAGED boundary itself (`DQWriterService`), not judgment
 about which DQ check to propose.
 """
 from __future__ import annotations
