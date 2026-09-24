@@ -1,4 +1,4 @@
-"""Agent DQ TestCase writer: SPEC_DRAFT -> VALIDATED -> STAGED.
+"""Agent DQ governance writer: SPEC_DRAFT -> VALIDATED -> BACKEND_STAGED.
 
 Per `planning/03-CODE-EDIT-MANIFEST.md`'s Agent "DQ writer" row and
 `docs/13_IMPLEMENTATION_SPEC.md`'s "DQ Writer (Agent) CONDITIONAL ADD"
@@ -14,15 +14,15 @@ This module's job is the Agent-side half of the boundary:
   `DQService.create_staged_test_case` itself enforces, so a bad request
   fails fast on the Agent side instead of round-tripping to Backend only to
   get a 422.
-- STAGED: the actual `POST /api/v1/dq/test-cases` call. Backend's response
-  status (`STAGED`/`EXECUTABLE`/`FAILED`) is authoritative; this module
-  never invents its own STAGED/FAILED verdict.
+- BACKEND_STAGED: `POST /api/v1/dq/test-cases` persists governance intent in
+  Backend only. It does not create an OpenMetadata TestCase. A separate human
+  approval + Backend materialization flow owns the later OM write.
 
 Every write carries an `AIWriteAuditRef` (I9) and a `reason_code`, gated by
 the same I11 kill switches as the classification/policy write boundaries
 (`agent_write_to_om_enabled` is the master switch here too -- DQ TestCase
-creation is an Agent-authored write, in the same spirit as an OM tag write,
-even though technically it's Backend/OM rather than OM directly).
+staging is an Agent-authored Backend write; OpenMetadata materialization is
+owned later by Backend after human/operator approval).
 """
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ class DQWriterService:
         agent_write_to_om_enabled: bool = True,
     ) -> dict[str, Any]:
         """Run SPEC_DRAFT -> VALIDATED -> STAGED. Returns a dict with
-        `status` (STAGED/EXECUTABLE/FAILED/SKIPPED/VALIDATION_FAILED),
+        `status` (STAGED/FAILED/SKIPPED/VALIDATION_FAILED),
         `reason_code`, `audit_ref`, and (on success) Backend's own response
         fields (`id`, `natural_key_hash`, `om_testcase_id`)."""
         # I11 master kill switch: fail safe before validation or any write.
