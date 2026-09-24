@@ -55,9 +55,6 @@ class GovernanceGateway:
             args["version"] = version
         return self.client.call_tool("get_ranger_sync_status", args)
 
-    def get_workflow_status(self, execution_id: str) -> dict[str, Any]:
-        return self.client.call_tool("get_workflow_status", {"execution_id": execution_id})
-
     def get_audit_summary(
         self,
         *,
