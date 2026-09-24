@@ -111,7 +111,7 @@ class ClassificationWorkerService:
         execution_id: str,
         generation: int,
         agent_write_to_om_enabled: bool = True,
-        auto_apply_tag_enabled: bool = True,
+        auto_apply_tag_enabled: bool = False,
     ) -> dict[str, Any]:
         first = self.governance.get_workflow_status(execution_id)
         stale = self._fence(
