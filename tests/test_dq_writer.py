@@ -71,7 +71,7 @@ def test_write_success_calls_backend_with_validated_at_before_call() -> None:
     backend.create_dq_test_case.return_value = {
         "id": "tc-1",
         "natural_key_hash": "dg_abc",
-        "om_testcase_id": "om-1",
+        "om_testcase_id": None,
         "status": "STAGED",
     }
     service = writer(backend)
@@ -80,6 +80,7 @@ def test_write_success_calls_backend_with_validated_at_before_call() -> None:
     assert result["status"] == "STAGED"
     assert result["reason_code"] == "RULE_TRUSTED_AUTO_APPLY"
     assert result["natural_key_hash"] == "dg_abc"
+    assert result["om_testcase_id"] is None
     assert result["audit_ref"]["validated_at"] is not None
     assert result["audit_ref"]["model_fingerprint"]
     assert result["audit_ref"]["prompt_version"] == "v1"
