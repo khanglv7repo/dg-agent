@@ -31,6 +31,11 @@ EXPECTED_BACKEND_TOOLS = (
 )
 R6B_BACKEND_TOOLS = EXPECTED_BACKEND_TOOLS + (
     "complete_classification_execution",
+    # Confirmed present on the live Backend MCP server inventory
+    # (app/mcp/backend_mcp_server.py) but missing from this constant --
+    # fixed in TASK-08 Work Packet H per
+    # planning/03-CODE-EDIT-MANIFEST.md's Backend MCP row.
+    "get_tag_sync_observability",
 )
 ALLOWED_BACKEND_TOOLS = frozenset(R6B_BACKEND_TOOLS)
 

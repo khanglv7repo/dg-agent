@@ -142,6 +142,9 @@ class FakeOpenMetadata:
 
 
 class FakeClassifier:
+    model_name = "fake-model"
+    prompt_version = "v3"
+
     def classify(self, *, catalog_context: dict, allowed_tags: list[str]):
         return TagReasoningResult(
             recommendations=[
@@ -272,7 +275,7 @@ def test_deterministic_completion_bound_failure_is_not_retried(
         def __init__(self, **kwargs) -> None:
             pass
 
-        def handle(self, *, execution_id: str, generation: int):
+        def handle(self, *, execution_id: str, generation: int, **kwargs):
             raise ClassificationCompletionBoundError(count=21)
 
     monkeypatch.setattr(

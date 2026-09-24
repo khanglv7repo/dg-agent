@@ -18,7 +18,7 @@ def test_production_celery_task_injects_backend_completion_channel(monkeypatch) 
     class Worker:
         def __init__(self, *, governance, openmetadata, classifier, completion):
             captured.update(governance=governance, openmetadata=openmetadata, classifier=classifier, completion=completion)
-        def handle(self, *, execution_id: str, generation: int):
+        def handle(self, *, execution_id: str, generation: int, **kwargs):
             return {"status": "NO_PROPOSAL", "execution_id": execution_id, "generation": generation}
 
     monkeypatch.setattr(task_module, "ClassificationWorkerService", Worker)

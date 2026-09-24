@@ -47,12 +47,24 @@ def _r6b_server() -> FastMCP:
     @mcp.tool
     def complete_classification_execution(execution_id: str, generation: int, status: str, result: dict) -> dict:
         return {"status": status, "execution_id": execution_id, "generation": generation, "authority_changed": True, "result": result}
+    @mcp.tool
+    def get_tag_sync_observability(limit: int = 20) -> dict: return {"limit": limit}
     return mcp
 
 
-def test_r6b_contract_is_frozen_r5_plus_one_completion_tool() -> None:
-    assert R6B_BACKEND_TOOLS[:-1] == EXPECTED_BACKEND_TOOLS
-    assert R6B_BACKEND_TOOLS[-1] == "complete_classification_execution"
+def test_r6b_contract_is_frozen_r5_plus_two_extension_tools() -> None:
+    # TASK-08 Work Packet H found a real drift: the live Backend MCP server
+    # (backend/governance_app/app/mcp/backend_mcp_server.py) exposes 17 tools
+    # -- the frozen R5 15 plus `complete_classification_execution` AND
+    # `get_tag_sync_observability` -- but this constant/test previously only
+    # accounted for one extension tool. Fixed per
+    # planning/03-CODE-EDIT-MANIFEST.md's Backend MCP row (server inventory
+    # and agent contract mirror must change together).
+    assert R6B_BACKEND_TOOLS[:-2] == EXPECTED_BACKEND_TOOLS
+    assert R6B_BACKEND_TOOLS[-2:] == (
+        "complete_classification_execution",
+        "get_tag_sync_observability",
+    )
     probe = BackendMCPClient(source=_r6b_server()).validate_r6b_contract()
     assert [item["name"] for item in probe["tools"]] == list(R6B_BACKEND_TOOLS)
 

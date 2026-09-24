@@ -70,6 +70,8 @@ def test_policy_flow_preview_conflict_and_draft_without_activation() -> None:
     }
 
     classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
     classifier.reason_policy.return_value = PolicyReasoningResult(
         proposal=_proposal(),
         rationale="Explicit alice access proposal",
@@ -107,6 +109,65 @@ def test_policy_flow_preview_conflict_and_draft_without_activation() -> None:
     gov.update_service_mapping.assert_not_called()
     gov.request_ranger_sync.assert_not_called()
 
+    # TASK-09: I9 audit ref / frozen PolicyReasonCode on the DRAFT write boundary.
+    assert result.reason_code == "DRAFT_CREATED"
+    assert result.audit_ref["model_fingerprint"]
+    assert result.audit_ref["prompt_version"] == "v2"
+    assert result.audit_ref["reason_code"] == "DRAFT_CREATED"
+    assert result.audit_ref["validated_at"] is not None
+
+
+def test_master_kill_switch_blocks_draft_persistence() -> None:
+    """I11: agent_write_to_om_enabled=False must skip DRAFT persistence
+    entirely, even when every other precondition (key, subjects, mapping,
+    preview, conflict) would otherwise allow it."""
+    om = MagicMock(spec=OpenMetadataGateway)
+    om.get_entity_context.return_value = {
+        "details": {"name": "customers", "service": {"name": "financial_postgres"}},
+        "lineage": {},
+    }
+    gov = MagicMock(spec=GovernanceGateway)
+    gov.inspect_ranger_state.return_value = {"kind": "health"}
+    gov.resolve_resource_mapping.return_value = {
+        "trino_catalog": "financial",
+        "ranger_service_name": "dev_trino",
+    }
+    gov.get_policy.return_value = {"status": "ACTIVE", "version": 1}
+    gov.list_policy_versions.return_value = [{"version": 1}]
+    gov.get_ranger_sync_status.return_value = {"projections": []}
+    gov.check_policy_conflict.return_value = {"conflict": False, "requires_review": False}
+    gov.preview_policy_change.return_value = {"projections": []}
+
+    classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
+    classifier.reason_policy.return_value = PolicyReasoningResult(
+        proposal=_proposal(),
+        rationale="Explicit alice access proposal",
+    )
+
+    _, result, _ = run_governance_graph(
+        om_gateway=om,
+        gov_gateway=gov,
+        tag_classifier=MagicMock(),
+        policy_classifier=classifier,
+        request_type="POLICY",
+        entity_type="table",
+        entity_fqn="financial.crm.customers",
+        target_subjects=[Subject(subject_type="USER", name="alice")],
+        policy_key="r6b-kill-switch-draft",
+        persist_draft=True,
+        environment="local",
+        agent_write_to_om_enabled=False,
+    )
+
+    assert result is not None
+    assert result.draft is None
+    assert result.reason_code == "KILL_SWITCH_DISABLED"
+    assert result.audit_ref["reason_code"] == "KILL_SWITCH_DISABLED"
+    assert result.audit_ref["validated_at"] is None
+    gov.create_policy_version.assert_not_called()
+
 
 def test_persist_draft_without_explicit_subjects_does_not_write() -> None:
     om = MagicMock(spec=OpenMetadataGateway)
@@ -114,6 +175,8 @@ def test_persist_draft_without_explicit_subjects_does_not_write() -> None:
     gov = MagicMock(spec=GovernanceGateway)
     gov.inspect_ranger_state.return_value = {"kind": "health"}
     classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
     classifier.reason_policy.return_value = PolicyReasoningResult(
         proposal=_proposal(),
         rationale="Conceptual proposal",
@@ -150,6 +213,8 @@ def test_unresolved_service_mapping_blocks_draft_persistence() -> None:
     gov.preview_policy_change.return_value = {"projections": []}
 
     classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
     classifier.reason_policy.return_value = PolicyReasoningResult(
         proposal=_proposal(),
         rationale="Explicit policy proposal",
@@ -198,6 +263,8 @@ def test_mapping_catalog_mismatch_blocks_draft_persistence() -> None:
     gov.preview_policy_change.return_value = {"projections": []}
 
     classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
     classifier.reason_policy.return_value = PolicyReasoningResult(
         proposal=_proposal(),
         rationale="Explicit policy proposal",
@@ -221,4 +288,61 @@ def test_mapping_catalog_mismatch_blocks_draft_persistence() -> None:
     assert result is not None
     assert result.draft is None
     assert any("catalog" in warning.lower() for warning in result.warnings)
+
+
+def test_read_only_run_never_surfaces_an_llm_invented_reason_code() -> None:
+    """Regression for a live bug (2026-09-24): with persist_draft=False,
+    optional_create_draft returns immediately without touching reason_code
+    -- so it must stay None, never an LLM-invented free-text value (observed
+    live: "ALLOW_WITH_COLUMN_MASK", not a frozen PolicyReasonCode)."""
+    om = MagicMock(spec=OpenMetadataGateway)
+    om.get_entity_context.return_value = {"details": {}, "lineage": {}}
+    gov = MagicMock(spec=GovernanceGateway)
+    gov.inspect_ranger_state.return_value = {"kind": "health"}
+
+    classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
+    classifier.reason_policy.return_value = PolicyReasoningResult(
+        proposal=_proposal(),
+        rationale="Read-only reasoning, no persistence requested",
+    )
+
+    _, result, _ = run_governance_graph(
+        om_gateway=om,
+        gov_gateway=gov,
+        tag_classifier=MagicMock(),
+        policy_classifier=classifier,
+        request_type="POLICY",
+        entity_type="table",
+        entity_fqn="financial.crm.customers",
+        target_subjects=[Subject(subject_type="USER", name="alice")],
+        policy_intent="Allow SELECT but mask phone",
+        persist_draft=False,
+    )
+
+    assert result is not None
+    assert result.reason_code is None
+    assert result.audit_ref is None
     gov.create_policy_version.assert_not_called()
+
+
+def test_policy_llm_output_schema_excludes_every_code_owned_field() -> None:
+    """The schema handed to with_structured_output() for policy reasoning
+    must contain only fields the LLM should legitimately produce -- never
+    reason_code or any other field graph_policy.py sets after the fact."""
+    from app.schemas import PolicyLLMOutput
+
+    schema = PolicyLLMOutput.model_json_schema()
+    properties = set(schema.get("properties", {}))
+    assert properties == {"proposal", "rationale", "expected_impact", "confidence", "warnings"}
+    for code_owned_field in (
+        "reason_code",
+        "audit_ref",
+        "backend_context",
+        "backend_logical_policy",
+        "conflict",
+        "preview",
+        "draft",
+    ):
+        assert code_owned_field not in properties

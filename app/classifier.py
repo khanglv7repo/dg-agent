@@ -12,6 +12,7 @@ except ImportError:
 from app.schemas import (
     AgentDecision,
     AgentTagSuggestion,
+    PolicyLLMOutput,
     PolicyReasoningResult,
     Subject,
     TagReasoningResult,
@@ -20,6 +21,7 @@ from app.schemas import (
 
 class StructuredClassifier(Protocol):
     model_name: str
+    prompt_version: str
 
     def classify(
         self,
@@ -31,6 +33,7 @@ class StructuredClassifier(Protocol):
 
 class PolicyClassifier(Protocol):
     model_name: str
+    prompt_version: str
 
     def reason_policy(
         self,
@@ -49,6 +52,7 @@ def _build_structured_llm(
     base_url: str | None,
     use_responses_api: bool,
     structured_output_method: str | None,
+    disable_thinking: bool,
     schema: type,
 ):
     if ChatOpenAI is None:
@@ -63,6 +67,14 @@ def _build_structured_llm(
         options["base_url"] = base_url
     if use_responses_api:
         options["use_responses_api"] = True
+    if disable_thinking:
+        # Verified live against DeepSeek's deepseek-flash model (2026-09-24):
+        # its default "thinking mode" rejects a forced tool_choice, which
+        # with_structured_output(method="function_calling") requires --
+        # "400 Thinking mode does not support this tool_choice". Disabling
+        # thinking mode via this provider-specific extra_body param is the
+        # fix; harmless to omit for providers that don't recognize the key.
+        options["extra_body"] = {"thinking": {"type": "disabled"}}
 
     llm = ChatOpenAI(**options)
     structured_options: dict[str, Any] = {}
@@ -81,6 +93,7 @@ class OpenAIStructuredClassifier:
         prompt_version: str = "v3",
         use_responses_api: bool = False,
         structured_output_method: str | None = None,
+        disable_thinking: bool = False,
     ) -> None:
         self.model_name = model
         self.prompt_version = prompt_version
@@ -90,6 +103,7 @@ class OpenAIStructuredClassifier:
             base_url=base_url,
             use_responses_api=use_responses_api,
             structured_output_method=structured_output_method,
+            disable_thinking=disable_thinking,
             schema=TagReasoningResult,
         )
 
@@ -125,6 +139,7 @@ class OpenAIPolicyClassifier:
         prompt_version: str = "v2",
         use_responses_api: bool = False,
         structured_output_method: str | None = None,
+        disable_thinking: bool = False,
     ) -> None:
         self.model_name = model
         self.prompt_version = prompt_version
@@ -134,7 +149,11 @@ class OpenAIPolicyClassifier:
             base_url=base_url,
             use_responses_api=use_responses_api,
             structured_output_method=structured_output_method,
-            schema=PolicyReasoningResult,
+            disable_thinking=disable_thinking,
+            # Bug fix (2026-09-24): must be the LLM-only PolicyLLMOutput
+            # schema, not the full PolicyReasoningResult -- see
+            # PolicyLLMOutput's docstring in schemas.py for why.
+            schema=PolicyLLMOutput,
         )
 
     def reason_policy(
@@ -168,7 +187,12 @@ class OpenAIPolicyClassifier:
             "Backend Governance Context:\n"
             f"{json.dumps(governance_context or {}, default=str)[:10000]}"
         )
-        return PolicyReasoningResult.model_validate(self._llm.invoke(prompt))
+        llm_output = PolicyLLMOutput.model_validate(self._llm.invoke(prompt))
+        # Wrap into the full result. Every code-owned field (reason_code,
+        # backend_context, backend_logical_policy, conflict, preview, draft,
+        # audit_ref) is left at its default here -- the LLM never sees or
+        # sets these; graph_policy.py is the only writer for any of them.
+        return PolicyReasoningResult(**llm_output.model_dump())
 
 
 __all__ = [

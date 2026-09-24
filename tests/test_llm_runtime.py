@@ -84,7 +84,14 @@ def test_policy_classifier_uses_same_transport(monkeypatch) -> None:
     assert built._llm is structured
     assert factory.call_args.kwargs["use_responses_api"] is True
     schema = client.with_structured_output.call_args.args[0]
-    assert schema.__name__ == "PolicyReasoningResult"
+    # Bug fix (2026-09-24): the LLM must only ever see PolicyLLMOutput
+    # (proposal/rationale/expected_impact/confidence/warnings), never the
+    # full PolicyReasoningResult -- the latter has code-owned fields
+    # (reason_code, backend_context, conflict, preview, draft, audit_ref)
+    # that must never be part of the LLM's own structured-output schema.
+    # See PolicyLLMOutput's docstring in schemas.py for the live bug this
+    # fixed (LLM invented reason_code="ALLOW_WITH_COLUMN_MASK").
+    assert schema.__name__ == "PolicyLLMOutput"
     assert client.with_structured_output.call_args.kwargs["method"] == "json_schema"
 
 

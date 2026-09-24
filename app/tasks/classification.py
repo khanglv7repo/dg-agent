@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from app.audit_fingerprint import env_bool
 from app.celery_app import app
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata_context import OpenMetadataGateway
@@ -68,6 +69,11 @@ def ai_classify_entity(
         return service.handle(
             execution_id=execution_id,
             generation=generation,
+            # I11 kill switches, independent per-path disable. Both default ON
+            # (matching AgentRunRequest's own defaults) unless explicitly
+            # turned off in the worker's environment.
+            agent_write_to_om_enabled=env_bool("AGENT_WRITE_TO_OM_ENABLED", True),
+            auto_apply_tag_enabled=env_bool("AUTO_APPLY_TAG_ENABLED", True),
         )
 
     except ClassificationCompletionBoundError:
