@@ -203,7 +203,7 @@ class DQWriterService:
         # first (only) write call, per Hard Invariant #13.
         validated_at = utc_now_iso()
         audit_ref = self._audit_ref(
-            reason_code="RULE_TRUSTED_AUTO_APPLY", draft=draft, validated_at=validated_at
+            reason_code="DQ_DRAFT_STAGED", draft=draft, validated_at=validated_at
         )
 
         try:
@@ -240,7 +240,7 @@ class DQWriterService:
 
         return {
             "status": response.get("status", "STAGED"),
-            "reason_code": "RULE_TRUSTED_AUTO_APPLY",
+            "reason_code": "DQ_DRAFT_STAGED",
             "audit_ref": audit_ref,
             "id": response.get("id"),
             "natural_key_hash": response.get("natural_key_hash"),
