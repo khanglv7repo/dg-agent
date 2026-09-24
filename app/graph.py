@@ -74,6 +74,7 @@ def build_governance_graph(
     tag_classifier: StructuredClassifier,
     policy_classifier: PolicyClassifier,
     dq_writer: DQWriterService | None = None,
+    checkpointer=None,
 ):
     """Compose all 4 domain graphs behind one Copilot router. `dq_writer` is
     optional (None) because most callers only exercise TAG/POLICY today --
@@ -162,7 +163,7 @@ def build_governance_graph(
     graph.add_edge("gather_verification_evidence", END)
     graph.add_edge("dq_unavailable", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def run_governance_graph(
@@ -182,12 +183,26 @@ def run_governance_graph(
     persist_draft: bool = False,
     environment: str = "local",
     agent_write_to_om_enabled: bool = True,
+    checkpointer=None,
+    thread_id: str | None = None,
 ) -> tuple[TagReasoningResult | None, PolicyReasoningResult | None, dict[str, Any]]:
     graph = build_governance_graph(
         om_gateway=om_gateway,
         gov_gateway=gov_gateway,
         tag_classifier=tag_classifier,
         policy_classifier=policy_classifier,
+        checkpointer=checkpointer,
+    )
+    # LangGraph requires a thread_id whenever a checkpointer is attached (it's
+    # the resume/dedup key -- restarting with the same thread_id continues
+    # from the last completed node instead of re-running from START). Default
+    # to entity_fqn when the caller doesn't supply one explicitly; callers
+    # that need duplicate-delivery dedup on a specific event should pass
+    # their own stable id (e.g. event_id) instead.
+    invoke_config = (
+        {"configurable": {"thread_id": thread_id or entity_fqn}}
+        if checkpointer is not None
+        else None
     )
     result = graph.invoke(
         {
@@ -206,7 +221,8 @@ def run_governance_graph(
             "persist_draft": persist_draft,
             "environment": environment,
             "agent_write_to_om_enabled": agent_write_to_om_enabled,
-        }
+        },
+        config=invoke_config,
     )
     tag_result = (
         TagReasoningResult.model_validate(result["tag_result"])

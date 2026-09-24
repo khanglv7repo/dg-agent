@@ -18,6 +18,7 @@ dependencies = [
     "data-ai-sdk>=0.2.0,<0.3.0",
     "fastmcp>=2.14.7,<2.15",
     "celery[redis]>=5.4,<6",
+    "langgraph-checkpoint-postgres>=2.0,<4",
 ]
 
 [project.optional-dependencies]

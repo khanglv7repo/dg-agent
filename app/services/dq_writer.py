@@ -30,6 +30,7 @@ from typing import Any, Protocol
 
 from app.audit_fingerprint import input_fingerprint, model_fingerprint, utc_now_iso
 from app.clients.backend_rest import BackendRestError
+from app.rate_limiter import RateLimiter, dq_write_rate_limiter
 
 
 class DQTestCaseWriter(Protocol):
@@ -96,10 +97,16 @@ class DQWriterService:
         backend: DQTestCaseWriter,
         model_name: str,
         prompt_version: str,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.backend = backend
         self.model_name = model_name
         self.prompt_version = prompt_version
+        # I10: rate limiting on repeated create_test_case-class calls, per
+        # docs/13_IMPLEMENTATION_SPEC.md section 8. Lazily built (not at
+        # import time) so tests that never call write() don't need a live
+        # Redis; RateLimiter itself fails open if Redis is unreachable.
+        self.rate_limiter = rate_limiter or dq_write_rate_limiter()
 
     @staticmethod
     def validate(draft: DQSpecDraft) -> None:
@@ -167,6 +174,28 @@ class DQWriterService:
                 "missing_fields": exc.missing_fields,
                 "audit_ref": self._audit_ref(
                     reason_code="VALIDATION_FAILED", draft=draft, validated_at=None
+                ),
+            }
+
+        # I10 rate limiting: checked after validation (a malformed request
+        # shouldn't consume rate budget) but before the Backend call. Keyed
+        # by target entity, matching I10's "repeated create_test_case-class
+        # calls" scope -- this bounds runaway writes against the SAME asset,
+        # not global throughput.
+        rate_result = self.rate_limiter.check_and_increment(
+            f"dq_write:{draft.target_asset_fqn}"
+        )
+        if not rate_result.allowed:
+            return {
+                "status": "RATE_LIMITED",
+                "reason_code": "RATE_LIMIT_EXCEEDED",
+                "rate_limit": {
+                    "limit": rate_result.limit,
+                    "window_seconds": rate_result.window_seconds,
+                    "current_count": rate_result.current_count,
+                },
+                "audit_ref": self._audit_ref(
+                    reason_code="RATE_LIMIT_EXCEEDED", draft=draft, validated_at=None
                 ),
             }
 
