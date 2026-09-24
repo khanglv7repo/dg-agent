@@ -38,7 +38,7 @@ class GovernanceAgentRunner:
         self.agent_bot_token = os.getenv("OPENMETADATA_AGENT_BOT_TOKEN", "")
         self.environment = os.getenv("GOVERNANCE_ENVIRONMENT", "local")
 
-        # One canonical LLM config is shared with the Celery worker path.
+        # One canonical LLM config is shared by the synchronous reasoning paths.
         self.llm_config = LLMRuntimeConfig.from_env()
 
         # Compatibility attributes retained for existing diagnostics/tests.
@@ -109,10 +109,9 @@ class GovernanceAgentRunner:
                 summary=tag_result.summary,
             )
 
-        # TASK-09: surface the write-boundary reason code + audit ref onto the
-        # top-level response. Only the POLICY path (optional_create_draft)
-        # populates these today; the TAG path is the standalone ai.classification
-        # Celery worker (app/tasks/classification.py), not this synchronous runner.
+        # Surface the write-boundary reason code + audit ref onto the top-level
+        # response. POLICY may persist a Backend DRAFT; TAG remains reasoning-only
+        # and never performs an authoritative tag mutation.
         reason_code = policy_result.reason_code if policy_result else None
         audit_ref = (
             AIWriteAuditRef.model_validate(policy_result.audit_ref)
