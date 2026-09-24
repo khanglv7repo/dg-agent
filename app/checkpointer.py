@@ -8,9 +8,8 @@ TASK-10 provisioned `agent_checkpoint_db` (idempotent creation in
 `infrastructure/docker/postgres-init/01-init.sh`), which unblocks this row.
 
 This module owns the connection string construction and a single shared
-`PostgresSaver` setup helper -- callers (the graph builder, the Celery
-worker, the runner) get one checkpointer instance per process, not one per
-request, since `PostgresSaver` manages its own connection pool internally.
+`PostgresSaver` setup helper -- callers (the graph builder and runner) get one checkpointer instance
+per process, not one per request.
 """
 from __future__ import annotations
 
