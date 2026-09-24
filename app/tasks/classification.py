@@ -69,11 +69,10 @@ def ai_classify_entity(
         return service.handle(
             execution_id=execution_id,
             generation=generation,
-            # I11 kill switches, independent per-path disable. Both default ON
-            # (matching AgentRunRequest's own defaults) unless explicitly
-            # turned off in the worker's environment.
+            # I11 kill switches, independent per-path disable. Agent reads may
+            # remain enabled, but authoritative tag mutation is opt-in.
             agent_write_to_om_enabled=env_bool("AGENT_WRITE_TO_OM_ENABLED", True),
-            auto_apply_tag_enabled=env_bool("AUTO_APPLY_TAG_ENABLED", True),
+            auto_apply_tag_enabled=env_bool("AUTO_APPLY_TAG_ENABLED", False),
         )
 
     except ClassificationCompletionBoundError:
