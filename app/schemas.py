@@ -202,7 +202,7 @@ class AgentRunRequest(BaseModel):
     agent_write_to_om_enabled: bool = True
     # auto_apply_tag_enabled: kill switch for the APPLY path only.
     # When False, APPLY downgrades to SUGGEST regardless of rule confidence.
-    auto_apply_tag_enabled: bool = True
+    auto_apply_tag_enabled: bool = False
 
     # TASK-09: DQ request fields (request_type="DQ" only). No LLM reasoning
     # in this path -- the caller supplies the already-decided TestCase spec;
