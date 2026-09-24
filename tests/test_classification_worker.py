@@ -162,7 +162,9 @@ def test_missing_completion_channel_fails_safe_before_om_mutation() -> None:
         classifier=classifier,
         completion=None,
     )
-    result = service.handle(execution_id="exec-1", generation=2)
+    result = service.handle(
+        execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+    )
     assert result["status"] == "BLOCKED_COMPLETION_CHANNEL"
     assert result["decision"] == "APPLY"
     assert result["om_mutation_count"] == 0
@@ -198,7 +200,9 @@ def test_valid_flow_with_injected_completion_channel_is_idempotent() -> None:
         classifier=classifier,
         completion=completion,
     )
-    result = service.handle(execution_id="exec-1", generation=2)
+    result = service.handle(
+        execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+    )
     assert result["status"] == "COMPLETED"
     assert result["om_mutation_count"] == 0
     completion.complete.assert_called_once()
@@ -211,7 +215,9 @@ def test_exactly_20_apply_is_allowed_and_completion_contains_20() -> None:
     ]
     service, gov, om, classifier, completion = configured_service(recommendations)
 
-    result = service.handle(execution_id="exec-1", generation=2)
+    result = service.handle(
+        execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+    )
 
     assert result["status"] == "COMPLETED"
     assert om.apply_tag_authoritative.call_count == 20
@@ -260,6 +266,20 @@ def test_master_kill_switch_skips_all_om_reads_and_writes() -> None:
     assert audit_ref["prompt_version"] == "v3"
 
 
+
+def test_auto_apply_is_disabled_by_default() -> None:
+    recommendations = [recommendation(1)]
+    service, gov, om, classifier, completion = configured_service(recommendations)
+
+    result = service.handle(execution_id="exec-1", generation=2)
+
+    assert result["status"] == "NO_PROPOSAL"
+    assert result["reason_code"] == "KILL_SWITCH_DISABLED"
+    assert result["om_mutation_count"] == 0
+    om.apply_tag_authoritative.assert_not_called()
+    completion.complete.assert_called_once()
+
+
 def test_auto_apply_kill_switch_downgrades_apply_to_no_proposal() -> None:
     """auto_apply_tag_enabled=False must downgrade APPLY to SUGGEST-only:
     no OM mutation, Backend sees NO_PROPOSAL, reason code records why."""
@@ -291,7 +311,9 @@ def test_audit_ref_present_and_distinct_validated_at_on_normal_apply() -> None:
     recommendations = [recommendation(1)]
     service, gov, om, classifier, completion = configured_service(recommendations)
 
-    result = service.handle(execution_id="exec-1", generation=2)
+    result = service.handle(
+        execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+    )
 
     assert result["status"] == "COMPLETED"
     assert result["reason_code"] == "RULE_TRUSTED_AUTO_APPLY"
@@ -334,7 +356,9 @@ def test_21_apply_fails_closed_before_second_fence_or_first_om_mutation() -> Non
     service, gov, om, classifier, completion = configured_service(recommendations)
 
     with pytest.raises(ClassificationCompletionBoundError) as exc_info:
-        service.handle(execution_id="exec-1", generation=2)
+        service.handle(
+            execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+        )
 
     assert exc_info.value.count == 21
     assert exc_info.value.limit == 20
@@ -358,7 +382,9 @@ def test_review_and_no_action_do_not_count_toward_completion_limit() -> None:
     )
 
     service, gov, om, classifier, completion = configured_service(recommendations)
-    result = service.handle(execution_id="exec-1", generation=2)
+    result = service.handle(
+        execution_id="exec-1", generation=2, auto_apply_tag_enabled=True
+    )
 
     assert result["status"] == "COMPLETED"
     assert om.apply_tag_authoritative.call_count == 20
