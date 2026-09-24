@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.checkpointer import build_checkpointer, checkpointer_enabled
 from app.clients.backend_rest import BackendRestClient
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata_context import OpenMetadataGateway
@@ -45,6 +46,15 @@ class GovernanceAgentRunner:
         self.llm_model = self.llm_config.model
         self.llm_base_url = self.llm_config.base_url
 
+        # TASK-10 unblocked this (agent_checkpoint_db now provisioned) --
+        # TASK-09's "Checkpoint persistence" manifest row. One checkpointer
+        # per process (PostgresSaver manages its own connection pool), not
+        # one per request. AGENT_CHECKPOINT_ENABLED=false (or no DB password
+        # configured) disables it -- graph.compile(checkpointer=None) is
+        # langgraph's own no-persistence default, so this fails safe to the
+        # exact pre-existing behavior when disabled, never a hard error.
+        self.checkpointer = build_checkpointer() if checkpointer_enabled() else None
+
     def run(self, request: AgentRunRequest) -> AgentRunResponse:
         if request.request_type == "DQ":
             return self._run_dq(request)
@@ -77,6 +87,8 @@ class GovernanceAgentRunner:
                 persist_draft=request.persist_draft,
                 environment=request.environment or self.environment,
                 agent_write_to_om_enabled=request.agent_write_to_om_enabled,
+                checkpointer=self.checkpointer,
+                thread_id=request.correlation_id or request.event_id,
             )
         finally:
             om_gateway.close()
@@ -144,6 +156,12 @@ class GovernanceAgentRunner:
                 tag_classifier=self.llm_config.tag_classifier(),
                 policy_classifier=self.llm_config.policy_classifier(),
                 dq_writer=dq_writer,
+                checkpointer=self.checkpointer,
+            )
+            invoke_config = (
+                {"configurable": {"thread_id": request.correlation_id or request.event_id}}
+                if self.checkpointer is not None
+                else None
             )
             result = graph.invoke(
                 {
@@ -158,7 +176,8 @@ class GovernanceAgentRunner:
                     "dq_column_name": request.dq_column_name,
                     "dq_rationale": request.dq_rationale,
                     "agent_write_to_om_enabled": request.agent_write_to_om_enabled,
-                }
+                },
+                config=invoke_config,
             )
         finally:
             om_gateway.close()
