@@ -78,7 +78,7 @@ def test_write_success_calls_backend_with_validated_at_before_call() -> None:
     result = service.write(valid_draft())
 
     assert result["status"] == "STAGED"
-    assert result["reason_code"] == "RULE_TRUSTED_AUTO_APPLY"
+    assert result["reason_code"] == "DQ_DRAFT_STAGED"
     assert result["natural_key_hash"] == "dg_abc"
     assert result["om_testcase_id"] is None
     assert result["audit_ref"]["validated_at"] is not None
