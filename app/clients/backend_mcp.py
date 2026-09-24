@@ -19,7 +19,6 @@ EXPECTED_BACKEND_TOOLS = (
     "check_policy_conflict",
     "resolve_resource_mapping",
     "get_ranger_sync_status",
-    "get_workflow_status",
     "get_audit_summary",
     "inspect_ranger_state",
     "query_trino_readonly",
