@@ -11,8 +11,8 @@ class GovernanceGateway:
     """Application-facing Backend gateway.
 
     Workflows invoke only explicit typed methods. The LLM never chooses an
-    arbitrary MCP tool name. R6-B deliberately adds the bounded classification
-    completion continuation to the frozen R5 capability set.
+    arbitrary MCP tool name. Authority-changing policy operations are not
+    exposed through this Agent gateway.
     """
 
     def __init__(
@@ -29,7 +29,7 @@ class GovernanceGateway:
         self.client.close()
 
     def validate_contract(self) -> dict[str, Any]:
-        return self.client.validate_r6b_contract()
+        return self.client.validate_contract()
 
     def get_policy(self, policy_key: str, version: int | None = None) -> dict[str, Any]:
         args: dict[str, Any] = {"policy_key": policy_key}
@@ -97,74 +97,6 @@ class GovernanceGateway:
             args["reason"] = reason
         return self.client.call_tool("create_policy_version", args)
 
-    def activate_policy_version(
-        self,
-        *,
-        policy_key: str,
-        version: int,
-        confirmed: bool = False,
-        approval_reason: str | None = None,
-    ) -> dict[str, Any]:
-        args: dict[str, Any] = {"policy_key": policy_key, "version": version, "confirmed": confirmed}
-        if approval_reason:
-            args["approval_reason"] = approval_reason
-        return self.client.call_tool("activate_policy_version", args)
-
-    def rollback_policy(
-        self,
-        *,
-        policy_key: str,
-        target_version: int,
-        confirmed: bool = False,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        args: dict[str, Any] = {"policy_key": policy_key, "target_version": target_version, "confirmed": confirmed}
-        if reason:
-            args["reason"] = reason
-        return self.client.call_tool("rollback_policy", args)
-
-    def update_service_mapping(
-        self,
-        *,
-        om_service_name: str,
-        trino_catalog: str,
-        ranger_service_name: str,
-        environment: str,
-        confirmed: bool = False,
-        ranger_tag_service_name: str | None = None,
-        enabled: bool = True,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        args: dict[str, Any] = {
-            "om_service_name": om_service_name,
-            "trino_catalog": trino_catalog,
-            "ranger_service_name": ranger_service_name,
-            "environment": environment,
-            "confirmed": confirmed,
-            "enabled": enabled,
-        }
-        if ranger_tag_service_name is not None:
-            args["ranger_tag_service_name"] = ranger_tag_service_name
-        if reason:
-            args["reason"] = reason
-        return self.client.call_tool("update_service_mapping", args)
-
-    def request_ranger_sync(self, *, policy_key: str) -> dict[str, Any]:
-        return self.client.call_tool("request_ranger_sync", {"policy_key": policy_key})
-
-    def complete_classification_execution(
-        self,
-        *,
-        execution_id: str,
-        generation: int,
-        status: Literal["COMPLETED", "NO_PROPOSAL"],
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Complete the same already-dispatched classification generation."""
-        return self.client.call_tool(
-            "complete_classification_execution",
-            {"execution_id": execution_id, "generation": generation, "status": status, "result": result},
-        )
 
 
 __all__ = ["GovernanceGateway", "BackendMCPError"]
