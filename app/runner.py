@@ -18,8 +18,35 @@ from app.schemas import (
     AgentRunResponse,
     AgentTagSuggestion,
     AIWriteAuditRef,
+    CopilotRecommendation,
+    PolicyReasoningResult,
+    TagReasoningResult,
 )
 from app.services.dq_writer import DQSpecDraft, DQWriterService
+
+_PENDING_APPROVAL_STATUS = "PENDING_APPROVAL"
+
+
+def _pending_interrupt_payload(result: dict) -> dict | None:
+    """Detect a HITL `interrupt()` pause in a raw `graph.invoke()` result
+    (per `app/graph_policy.py`/`graph_dq.py`/`graph_copilot.py`'s
+    interrupt() calls). Returns the interrupt's `.value` payload if one
+    fired, else None. Verified live shape:
+    `{"__interrupt__": [Interrupt(value=..., id=...)]}`.
+
+    This synchronous runner surfaces a paused graph as
+    `status="PENDING_APPROVAL"` with this payload attached -- callers using
+    this path directly (not through the LangGraph API server, which
+    handles interrupts natively) are responsible for resuming via a
+    second `graph.invoke(Command(resume=...), config=...)` call using the
+    same thread_id. Agent Chat UI / the LangGraph server path does not go
+    through this runner at all and handles interrupts itself."""
+    pending = result.get("__interrupt__")
+    if not pending:
+        return None
+    first = pending[0]
+    value = getattr(first, "value", first)
+    return value if isinstance(value, dict) else {"value": value}
 
 
 class GovernanceAgentRunner:
@@ -60,6 +87,8 @@ class GovernanceAgentRunner:
             return self._run_dq(request)
         if request.request_type == "VERIFICATION":
             return self._run_verification(request)
+        if request.request_type == "COPILOT":
+            return self._run_copilot(request)
         return self._run_tag_or_policy(request)
 
     def _run_tag_or_policy(self, request: AgentRunRequest) -> AgentRunResponse:
@@ -71,28 +100,67 @@ class GovernanceAgentRunner:
         tag_classifier = self.llm_config.tag_classifier()
         policy_classifier = self.llm_config.policy_classifier()
         try:
-            tag_result, policy_result, _context = run_governance_graph(
+            graph = build_governance_graph(
                 om_gateway=om_gateway,
                 gov_gateway=gov_gateway,
                 tag_classifier=tag_classifier,
                 policy_classifier=policy_classifier,
-                request_type=request.request_type,
-                entity_type=request.entity_type,
-                entity_fqn=request.entity_fqn,
-                allowed_tags=request.allowed_tags,
-                include_lineage=request.include_lineage,
-                target_subjects=request.target_subjects,
-                policy_intent=request.policy_intent,
-                policy_key=request.policy_key,
-                persist_draft=request.persist_draft,
-                environment=request.environment or self.environment,
-                agent_write_to_om_enabled=request.agent_write_to_om_enabled,
                 checkpointer=self.checkpointer,
-                thread_id=request.correlation_id or request.event_id,
+            )
+            thread_id = request.correlation_id or request.event_id
+            invoke_config = (
+                {"configurable": {"thread_id": thread_id}}
+                if self.checkpointer is not None
+                else None
+            )
+            raw_result = graph.invoke(
+                {
+                    "request_type": request.request_type,
+                    "entity_type": request.entity_type,
+                    "entity_fqn": request.entity_fqn,
+                    "allowed_tags": request.allowed_tags,
+                    "include_lineage": request.include_lineage,
+                    "target_subjects": (
+                        [s.model_dump(mode="json") for s in request.target_subjects]
+                        if request.target_subjects
+                        else None
+                    ),
+                    "policy_intent": request.policy_intent,
+                    "policy_key": request.policy_key,
+                    "persist_draft": request.persist_draft,
+                    "environment": request.environment or self.environment,
+                    "agent_write_to_om_enabled": request.agent_write_to_om_enabled,
+                },
+                config=invoke_config,
             )
         finally:
             om_gateway.close()
             gov_gateway.close()
+
+        # HITL: the POLICY DRAFT write path (graph_policy.py) pauses via
+        # interrupt() before ever calling create_policy_version. A paused
+        # graph's result has neither tag_result nor policy_result yet (the
+        # node hasn't returned) -- surface this distinctly rather than
+        # silently returning empty results, per the same rationale as
+        # _run_dq/_run_copilot below.
+        pending = _pending_interrupt_payload(raw_result)
+        if pending is not None:
+            return AgentRunResponse(
+                status=_PENDING_APPROVAL_STATUS,
+                request_type=request.request_type,
+                pending_approval={**pending, "thread_id": thread_id},
+            )
+
+        tag_result = (
+            TagReasoningResult.model_validate(raw_result["tag_result"])
+            if raw_result.get("tag_result")
+            else None
+        )
+        policy_result = (
+            PolicyReasoningResult.model_validate(raw_result["policy_result"])
+            if raw_result.get("policy_result")
+            else None
+        )
 
         decision = AgentDecision()
         if tag_result and tag_result.recommendations:
@@ -158,8 +226,9 @@ class GovernanceAgentRunner:
                 dq_writer=dq_writer,
                 checkpointer=self.checkpointer,
             )
+            thread_id = request.correlation_id or request.event_id
             invoke_config = (
-                {"configurable": {"thread_id": request.correlation_id or request.event_id}}
+                {"configurable": {"thread_id": thread_id}}
                 if self.checkpointer is not None
                 else None
             )
@@ -183,6 +252,16 @@ class GovernanceAgentRunner:
             om_gateway.close()
             gov_gateway.close()
             backend_rest.close()
+
+        # HITL: graph_dq.py pauses via interrupt() before the real
+        # create_dq_test_case Backend call.
+        pending = _pending_interrupt_payload(result)
+        if pending is not None:
+            return AgentRunResponse(
+                status=_PENDING_APPROVAL_STATUS,
+                request_type="DQ",
+                pending_approval={**pending, "thread_id": thread_id},
+            )
 
         dq_result = result.get("dq_result") or {}
         audit_ref = (
@@ -229,4 +308,63 @@ class GovernanceAgentRunner:
             status="completed",
             request_type="VERIFICATION",
             verification_result=result.get("verification_result") or {},
+        )
+
+    def _run_copilot(self, request: AgentRunRequest) -> AgentRunResponse:
+        """TASK-09 addendum: RAG review copilot. Never writes anything
+        itself (see app/review_copilot.py's module docstring) -- the only
+        interrupt() here is an acknowledgment pause, not a write gate."""
+        om_gateway = OpenMetadataGateway(endpoint=self.mcp_url, token=self.agent_bot_token)
+        gov_gateway = GovernanceGateway(endpoint=self.backend_mcp_url)
+        copilot_chat_model = self.llm_config.copilot_chat_model()
+        try:
+            graph = build_governance_graph(
+                om_gateway=om_gateway,
+                gov_gateway=gov_gateway,
+                tag_classifier=self.llm_config.tag_classifier(),
+                policy_classifier=self.llm_config.policy_classifier(),
+                copilot_chat_model=copilot_chat_model,
+                checkpointer=self.checkpointer,
+            )
+            thread_id = request.correlation_id or request.event_id
+            invoke_config = (
+                {"configurable": {"thread_id": thread_id}}
+                if self.checkpointer is not None
+                else None
+            )
+            result = graph.invoke(
+                {
+                    "request_type": "COPILOT",
+                    "entity_type": request.entity_type,
+                    "entity_fqn": request.entity_fqn,
+                    "include_lineage": request.include_lineage,
+                    "policy_key": request.policy_key,
+                    "copilot_question": request.copilot_question,
+                    "copilot_want_recommendation": request.copilot_want_recommendation,
+                },
+                config=invoke_config,
+            )
+        finally:
+            om_gateway.close()
+            gov_gateway.close()
+
+        pending = _pending_interrupt_payload(result)
+        if pending is not None:
+            return AgentRunResponse(
+                status=_PENDING_APPROVAL_STATUS,
+                request_type="COPILOT",
+                pending_approval={**pending, "thread_id": thread_id},
+            )
+
+        copilot_result = result.get("copilot_result") or {}
+        recommendation = (
+            CopilotRecommendation.model_validate(copilot_result["recommendation"])
+            if copilot_result.get("recommendation")
+            else None
+        )
+        return AgentRunResponse(
+            status="completed",
+            request_type="COPILOT",
+            copilot_answer=copilot_result.get("answer"),
+            copilot_recommendation=recommendation,
         )

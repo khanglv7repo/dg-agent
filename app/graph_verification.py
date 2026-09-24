@@ -12,9 +12,48 @@ arbitrary call" boundary rule (`tests/test_boundaries.py`).
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
 from app.gateways.governance import GovernanceGateway
+
+
+def _format_verification_chat_reply(evidence: dict[str, Any], entity_fqn: str) -> str:
+    """Format verification evidence as a readable chat message."""
+    lines = [f"**Verification evidence for `{entity_fqn}`**\n"]
+
+    audit = evidence.get("audit_summary", {})
+    if isinstance(audit, dict):
+        total = audit.get("total", 0)
+        entries = audit.get("entries") or audit.get("items") or []
+        lines.append(f"📋 **Audit summary:** {total} event(s) found")
+        for e in (entries if isinstance(entries, list) else [])[:5]:
+            if isinstance(e, dict):
+                lines.append(f"  - {e.get('action','?')} on {e.get('object_type','?')} `{e.get('object_id','?')}` at {e.get('created_at','?')}")
+
+    ranger = evidence.get("ranger_health", {})
+    if isinstance(ranger, dict):
+        status = ranger.get("status") or ranger.get("health") or "unknown"
+        lines.append(f"\n🛡️ **Ranger health:** {status}")
+
+    sync = evidence.get("ranger_sync_status")
+    if isinstance(sync, dict):
+        lines.append(f"🔄 **Ranger sync:** {sync.get('status','unknown')} (version {sync.get('version','?')})")
+
+    trino = evidence.get("trino_check")
+    if trino:
+        lines.append(f"\n🔍 **Trino check:** {json.dumps(trino, default=str)[:300]}")
+
+    warnings = evidence.get("warnings") or []
+    if warnings:
+        lines.append("\n⚠️ **Warnings:**")
+        for w in warnings:
+            lines.append(f"  - {w}")
+
+    return "\n".join(lines)
+
 
 
 def build_verification_nodes(*, gov_gateway: GovernanceGateway) -> dict[str, Any]:
@@ -60,7 +99,15 @@ def build_verification_nodes(*, gov_gateway: GovernanceGateway) -> dict[str, Any
                 warnings.append(f"Trino read-only check failed: {exc}")
 
         evidence["warnings"] = warnings
-        return {"verification_result": evidence}
+        result: dict[str, Any] = {"verification_result": evidence}
+        if state.get("messages"):
+            result["messages"] = [
+                AIMessage(content=_format_verification_chat_reply(
+                    evidence, state.get("entity_fqn", "")
+                ))
+            ]
+        return result
+
 
     return {"gather_verification_evidence": gather_verification_evidence}
 

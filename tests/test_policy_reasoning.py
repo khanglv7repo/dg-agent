@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 from app.gateways.governance import GovernanceGateway
 from app.gateways.openmetadata import OpenMetadataGateway
-from app.graph import run_governance_graph
+from app.graph import build_governance_graph, run_governance_graph
 from app.schemas import (
     ColumnMask,
     LogicalPolicyProposal,
@@ -77,20 +80,42 @@ def test_policy_flow_preview_conflict_and_draft_without_activation() -> None:
         rationale="Explicit alice access proposal",
     )
 
-    _, result, _ = run_governance_graph(
+    # HITL: graph_policy.py's optional_create_draft pauses via interrupt()
+    # before ever calling create_policy_version -- must resume with an
+    # explicit APPROVE to reach the real write. run_governance_graph()'s
+    # tuple return can't express a resume, so drive build_governance_graph
+    # directly here (same underlying graph).
+    checkpointer = InMemorySaver()
+    graph = build_governance_graph(
         om_gateway=om,
         gov_gateway=gov,
         tag_classifier=MagicMock(),
         policy_classifier=classifier,
-        request_type="POLICY",
-        entity_type="table",
-        entity_fqn="financial.crm.customers",
-        target_subjects=[Subject(subject_type="USER", name="alice")],
-        policy_intent="Mask phone and filter customer rows",
-        policy_key="r6b-isolated-draft",
-        persist_draft=True,
-        environment="local",
+        checkpointer=checkpointer,
     )
+    config = {"configurable": {"thread_id": "policy-test-1"}}
+    paused = graph.invoke(
+        {
+            "request_type": "POLICY",
+            "entity_type": "table",
+            "entity_fqn": "financial.crm.customers",
+            "target_subjects": [{"subject_type": "USER", "name": "alice"}],
+            "policy_intent": "Mask phone and filter customer rows",
+            "policy_key": "r6b-isolated-draft",
+            "persist_draft": True,
+            "environment": "local",
+            "agent_write_to_om_enabled": True,
+            "allowed_tags": [],
+            "include_lineage": True,
+        },
+        config=config,
+    )
+    assert "__interrupt__" in paused
+    assert paused["__interrupt__"][0].value["kind"] == "POLICY_DRAFT_APPROVAL"
+    gov.create_policy_version.assert_not_called()
+
+    raw_result = graph.invoke(Command(resume={"decision": "APPROVE"}), config=config)
+    result = PolicyReasoningResult.model_validate(raw_result["policy_result"])
 
     assert result is not None
     assert result.backend_logical_policy["subjects"] == [
@@ -115,6 +140,63 @@ def test_policy_flow_preview_conflict_and_draft_without_activation() -> None:
     assert result.audit_ref["prompt_version"] == "v2"
     assert result.audit_ref["reason_code"] == "DRAFT_CREATED"
     assert result.audit_ref["validated_at"] is not None
+
+
+def test_policy_draft_rejected_by_human_is_not_persisted() -> None:
+    """HITL: a REJECT decision at the interrupt() must leave the DRAFT
+    unpersisted, with a distinct reason_code."""
+    om = MagicMock(spec=OpenMetadataGateway)
+    om.get_entity_context.return_value = {
+        "details": {"name": "customers", "service": {"name": "financial_postgres"}},
+        "lineage": {},
+    }
+    gov = MagicMock(spec=GovernanceGateway)
+    gov.inspect_ranger_state.return_value = {"kind": "health"}
+    gov.resolve_resource_mapping.return_value = {
+        "trino_catalog": "financial",
+        "ranger_service_name": "dev_trino",
+    }
+    gov.get_policy.return_value = {"status": "ACTIVE", "version": 1}
+    gov.list_policy_versions.return_value = [{"version": 1}]
+    gov.get_ranger_sync_status.return_value = {"projections": []}
+    gov.check_policy_conflict.return_value = {"conflict": False, "requires_review": False}
+    gov.preview_policy_change.return_value = {"projections": []}
+
+    classifier = MagicMock()
+    classifier.model_name = "test-model"
+    classifier.prompt_version = "v2"
+    classifier.reason_policy.return_value = PolicyReasoningResult(
+        proposal=_proposal(),
+        rationale="Explicit alice access proposal",
+    )
+
+    checkpointer = InMemorySaver()
+    graph = build_governance_graph(
+        om_gateway=om,
+        gov_gateway=gov,
+        tag_classifier=MagicMock(),
+        policy_classifier=classifier,
+        checkpointer=checkpointer,
+    )
+    config = {"configurable": {"thread_id": "policy-test-reject"}}
+    graph.invoke(
+        {
+            "request_type": "POLICY",
+            "entity_type": "table",
+            "entity_fqn": "financial.crm.customers",
+            "target_subjects": [{"subject_type": "USER", "name": "alice"}],
+            "policy_key": "r6b-rejected-draft",
+            "persist_draft": True,
+            "environment": "local",
+        },
+        config=config,
+    )
+    raw_result = graph.invoke(Command(resume={"decision": "REJECT"}), config=config)
+    result = PolicyReasoningResult.model_validate(raw_result["policy_result"])
+
+    assert result.draft is None
+    assert result.reason_code == "DRAFT_SKIPPED_REJECTED"
+    gov.create_policy_version.assert_not_called()
 
 
 def test_master_kill_switch_blocks_draft_persistence() -> None:

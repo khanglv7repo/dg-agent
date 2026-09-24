@@ -178,7 +178,11 @@ class OpenMetadataGateway(_BaseOpenMetadataGateway):
         if self._sdk is None:
             return None
 
-        args = {"entity_type": entity_type, "fqn": entity_fqn}
+        # OM 2.0 MCP tools require camelCase "entityType", not snake_case
+        # "entity_type". Verified live 2026-09-25: sending "entity_type" returns
+        # isError=True with statusCode 500 ("resource is marked non-null but is
+        # null"); sending "entityType" returns entity data correctly.
+        args = {"entityType": entity_type, "fqn": entity_fqn}
         try:
             details = self._call_sdk_mcp_tool("get_entity_details", args)
         except Exception as exc:
@@ -214,7 +218,8 @@ class OpenMetadataGateway(_BaseOpenMetadataGateway):
         if self._fallback_mcp is None:
             return None
 
-        args = {"entity_type": entity_type, "fqn": entity_fqn}
+        # Same camelCase fix as _sdk_context above.
+        args = {"entityType": entity_type, "fqn": entity_fqn}
         try:
             details = self._fallback_mcp.call_tool("get_entity_details", args)
         except Exception as exc:

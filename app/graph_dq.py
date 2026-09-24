@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.dq_writer import DQSpecDraft, DQWriterService
+from langgraph.types import interrupt
+
+from app.services.dq_writer import DQSpecDraft, DQValidationError, DQWriterService
 
 
 def build_dq_nodes(*, dq_writer: DQWriterService) -> dict[str, Any]:
@@ -32,9 +34,49 @@ def build_dq_nodes(*, dq_writer: DQWriterService) -> dict[str, Any]:
             column_name=state.get("dq_column_name"),
             rationale=state.get("dq_rationale"),
         )
+
+        agent_write_to_om_enabled = state.get("agent_write_to_om_enabled", True)
+
+        # HITL (per user's explicit choice): pause before the real OM/Backend
+        # write, but only when there's actually something to write -- a
+        # disabled kill switch or an invalid draft has nothing worth
+        # interrupting for (DQWriterService.write() below will report the
+        # correct SKIPPED/VALIDATION_FAILED status itself in those cases,
+        # without ever reaching this interrupt).
+        if agent_write_to_om_enabled:
+            try:
+                DQWriterService.validate(draft)
+            except DQValidationError:
+                pass
+            else:
+                approval = interrupt(
+                    {
+                        "kind": "DQ_TESTCASE_APPROVAL",
+                        "target_asset_fqn": draft.target_asset_fqn,
+                        "test_definition_fqn": draft.test_definition_fqn,
+                        "rule_id": draft.rule_id,
+                        "parameter_values": draft.parameter_values,
+                        "rationale": draft.rationale,
+                        "message": (
+                            f"Agent proposes creating a DQ TestCase "
+                            f"({draft.test_definition_fqn!r}) against "
+                            f"{draft.target_asset_fqn!r}. Approve to create "
+                            "it in OpenMetadata (STAGED, not yet "
+                            "executable), or reject to discard."
+                        ),
+                    }
+                )
+                if not isinstance(approval, dict) or approval.get("decision") != "APPROVE":
+                    return {
+                        "dq_result": {
+                            "status": "REJECTED",
+                            "reason_code": "MANUAL_OVERRIDE_LOCKED",
+                        }
+                    }
+
         result = dq_writer.write(
             draft,
-            agent_write_to_om_enabled=state.get("agent_write_to_om_enabled", True),
+            agent_write_to_om_enabled=agent_write_to_om_enabled,
         )
         return {"dq_result": result}
 

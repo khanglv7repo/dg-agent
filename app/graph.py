@@ -14,9 +14,10 @@ remain the stable external contract every existing caller (`runner.py`,
 """
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 
 from app.classifier import PolicyClassifier, StructuredClassifier
 from app.gateways.governance import GovernanceGateway
@@ -24,15 +25,24 @@ from app.gateways.governance import GovernanceGateway
 # gateway; this type hint must say so (see the same fix in
 # app/services/classification_worker.py for the full rationale).
 from app.gateways.openmetadata_context import OpenMetadataGateway
+from app.graph_chat import ChatRouter, build_chat_nodes
+from app.graph_copilot import build_copilot_nodes
 from app.graph_dq import build_dq_nodes
 from app.graph_policy import build_policy_nodes
 from app.graph_tag import build_tag_nodes, compute_effective_allowed_tags
 from app.graph_verification import build_verification_nodes
+from app.review_copilot import CopilotChatModel
 from app.schemas import PolicyReasoningResult, Subject, TagReasoningResult
 from app.services.dq_writer import DQWriterService
 
 
 class AgentState(TypedDict, total=False):
+    # Chat entry (graph_chat.py) -- only populated by callers using Agent
+    # Chat UI's free-text messages path (e.g. `POST /threads/{id}/runs`
+    # with `{"messages": [...]}`). Every existing structured caller
+    # (runner.py, the Celery worker, every pre-existing test) never sets
+    # this and is entirely unaffected -- see route_entry below.
+    messages: Annotated[list, add_messages]
     request_type: str
     entity_type: str
     entity_fqn: str
@@ -65,6 +75,12 @@ class AgentState(TypedDict, total=False):
     verification_audit_limit: int
     verification_trino_check_sql: str | None
     verification_result: dict[str, Any]
+    # Copilot domain (graph_copilot.py) -- RAG review copilot, read-only,
+    # advisory only. policy_key doubles as the "which pending item" key,
+    # shared with the POLICY domain's own state field.
+    copilot_question: str | None
+    copilot_want_recommendation: bool
+    copilot_result: dict[str, Any]
 
 
 def build_governance_graph(
@@ -74,16 +90,37 @@ def build_governance_graph(
     tag_classifier: StructuredClassifier,
     policy_classifier: PolicyClassifier,
     dq_writer: DQWriterService | None = None,
+    copilot_chat_model: CopilotChatModel | None = None,
+    chat_router: ChatRouter | None = None,
     checkpointer=None,
 ):
-    """Compose all 4 domain graphs behind one Copilot router. `dq_writer` is
-    optional (None) because most callers only exercise TAG/POLICY today --
-    the DQ branch simply isn't reachable via `route_intent` unless a caller
-    passes `request_type="DQ"`, and building a real `DQWriterService`
-    requires a live `BackendRestClient` the TAG/POLICY-only callers
-    (`runner.py`'s synchronous path, most existing tests) don't construct."""
+    """Compose all domain graphs behind one Copilot router. `dq_writer`/
+    `copilot_chat_model`/`chat_router` are optional (None) because most
+    callers only exercise TAG/POLICY today -- those branches simply aren't
+    reachable via `route_from_start` unless a caller passes the matching
+    `request_type`, and building the real dependencies (a live
+    `BackendRestClient`, a real chat-capable LLM) requires setup the
+    TAG/POLICY-only callers (`runner.py`'s synchronous path, most existing
+    tests) don't do."""
 
     dq_available = dq_writer is not None
+    copilot_available = copilot_chat_model is not None
+    chat_available = chat_router is not None
+
+    def route_entry(state: AgentState) -> str:
+        # Only take the chat path when the caller actually used the
+        # messages/chat UI input AND didn't already supply a structured
+        # request_type -- a direct structured request (runner.py, Celery,
+        # every pre-existing test) always has request_type set and skips
+        # this entirely, unaffected by whether a chat_router is configured.
+        request_type = (state.get("request_type") or "").upper()
+        if (
+            state.get("messages")
+            and chat_available
+            and (not request_type or request_type == "CHAT_REPLY_ONLY")
+        ):
+            return "CHAT"
+        return route_from_start(state)
 
     def route_from_start(state: AgentState) -> str:
         request_type = (state.get("request_type") or "TAG").upper()
@@ -93,6 +130,10 @@ def build_governance_graph(
             return "VERIFICATION"
         if request_type == "DQ":
             return "DQ" if dq_available else "DQ_UNAVAILABLE"
+        if request_type == "COPILOT":
+            return "COPILOT" if copilot_available else "COPILOT_UNAVAILABLE"
+        if request_type == "CHAT_REPLY_ONLY":
+            return "CHAT_REPLY_ONLY"
         return "TAG"
 
     def route_om_context(state: AgentState) -> str:
@@ -106,6 +147,18 @@ def build_governance_graph(
                 "error": (
                     "DQ writer was not configured for this graph instance "
                     "(no BackendRestClient/DQWriterService was constructed)"
+                ),
+            }
+        }
+
+    def copilot_unavailable(state: AgentState) -> AgentState:
+        return {
+            "copilot_result": {
+                "answer": None,
+                "recommendation": None,
+                "error": (
+                    "Review copilot was not configured for this graph "
+                    "instance (no chat-capable LLM was constructed)"
                 ),
             }
         }
@@ -138,15 +191,57 @@ def build_governance_graph(
         graph.add_node("write_dq_test_case", dq_nodes["write_dq_test_case"])
         graph.add_edge("write_dq_test_case", END)
 
+    # COPILOT domain (RAG review copilot, read-only/advisory)
+    graph.add_node("copilot_unavailable", copilot_unavailable)
+    if copilot_available:
+        copilot_nodes = build_copilot_nodes(
+            om_gateway=om_gateway,
+            gov_gateway=gov_gateway,
+            chat_model=copilot_chat_model,
+        )
+        graph.add_node("run_review_copilot", copilot_nodes["run_review_copilot"])
+        graph.add_edge("run_review_copilot", END)
+
+    # Chat entry (graph_chat.py) -- only reachable when a caller used the
+    # messages/chat path (see route_entry above). Fills in request_type/
+    # entity_fqn from the classified intent, or sets
+    # request_type="CHAT_REPLY_ONLY" (handled as its own terminal branch)
+    # when the message didn't carry enough information. Registered after
+    # every domain node above so its conditional edges can target them.
+    graph.add_node("chat_reply_only", lambda state: {})
+    graph.add_edge("chat_reply_only", END)
+    if chat_available:
+        chat_nodes = build_chat_nodes(chat_router=chat_router)
+        graph.add_node("chat_entry", chat_nodes["chat_entry"])
+        chat_exit_branches = {
+            "TAG": "load_om_context",
+            "POLICY": "load_om_context",
+            "VERIFICATION": "gather_verification_evidence",
+            "DQ_UNAVAILABLE": "dq_unavailable",
+            "COPILOT_UNAVAILABLE": "copilot_unavailable",
+            "CHAT_REPLY_ONLY": "chat_reply_only",
+        }
+        if dq_available:
+            chat_exit_branches["DQ"] = "write_dq_test_case"
+        if copilot_available:
+            chat_exit_branches["COPILOT"] = "run_review_copilot"
+        graph.add_conditional_edges("chat_entry", route_from_start, chat_exit_branches)
+
     branches = {
         "TAG": "load_om_context",
         "POLICY": "load_om_context",
         "VERIFICATION": "gather_verification_evidence",
         "DQ_UNAVAILABLE": "dq_unavailable",
+        "COPILOT_UNAVAILABLE": "copilot_unavailable",
     }
     if dq_available:
         branches["DQ"] = "write_dq_test_case"
-    graph.add_conditional_edges(START, route_from_start, branches)
+    if copilot_available:
+        branches["COPILOT"] = "run_review_copilot"
+    if chat_available:
+        branches["CHAT"] = "chat_entry"
+    branches["CHAT_REPLY_ONLY"] = "chat_reply_only"
+    graph.add_conditional_edges(START, route_entry, branches)
 
     graph.add_conditional_edges(
         "load_om_context",
@@ -159,9 +254,32 @@ def build_governance_graph(
     graph.add_edge("normalize_backend_policy", "check_policy_conflict")
     graph.add_edge("check_policy_conflict", "preview_policy_change")
     graph.add_edge("preview_policy_change", "optional_create_draft")
-    graph.add_edge("optional_create_draft", END)
+
+    # POLICY chat reply: append AIMessage when the run came via chat UI.
+    # Structured-API callers never set messages, so this node is a no-op for
+    # them (returns {} immediately) -- zero behavior change.
+    from langchain_core.messages import AIMessage as _AIMessage
+    from app.graph_policy import _format_policy_chat_reply
+
+    def policy_chat_reply(state: dict) -> dict:
+        if not state.get("messages"):
+            return {}
+        policy_result = state.get("policy_result") or {}
+        return {
+            "messages": [
+                _AIMessage(content=_format_policy_chat_reply(
+                    policy_result, state.get("entity_fqn", "")
+                ))
+            ]
+        }
+
+    graph.add_node("policy_chat_reply", policy_chat_reply)
+    graph.add_edge("optional_create_draft", "policy_chat_reply")
+    graph.add_edge("policy_chat_reply", END)
     graph.add_edge("gather_verification_evidence", END)
     graph.add_edge("dq_unavailable", END)
+    graph.add_edge("copilot_unavailable", END)
+
 
     return graph.compile(checkpointer=checkpointer)
 

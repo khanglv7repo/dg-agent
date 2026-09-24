@@ -147,7 +147,8 @@ class OpenMetadataGateway:
         if self._sdk is not None:
             try:
                 self.active_transport = "official_sdk"
-                args = {"entity_type": entity_type, "fqn": entity_fqn}
+                # OM 2.0 MCP uses camelCase "entityType" (not snake_case "entity_type").
+                args = {"entityType": entity_type, "fqn": entity_fqn}
                 details_res = self._call_sdk_mcp_tool("get_entity_details", args)
                 details = (
                     details_res.data

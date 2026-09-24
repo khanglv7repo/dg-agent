@@ -75,15 +75,11 @@ class OpenMetadataMCPClient:
         entity_fqn: str,
         include_lineage: bool,
     ) -> dict[str, Any]:
+        # OM 2.0 MCP uses camelCase "entityType" (not snake_case "entity_type").
+        args = {"entityType": entity_type, "fqn": entity_fqn}
         context = {
-            "details": self.call_tool(
-                "get_entity_details",
-                {"entity_type": entity_type, "fqn": entity_fqn},
-            )
+            "details": self.call_tool("get_entity_details", args)
         }
         if include_lineage:
-            context["lineage"] = self.call_tool(
-                "get_entity_lineage",
-                {"entity_type": entity_type, "fqn": entity_fqn},
-            )
+            context["lineage"] = self.call_tool("get_entity_lineage", args)
         return context

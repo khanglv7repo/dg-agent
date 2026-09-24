@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 from app.graph import AgentState, build_governance_graph
 from app.services.dq_writer import DQWriterService
 
 
-def _graph(*, dq_writer=None):
+def _graph(*, dq_writer=None, checkpointer=None):
     om = MagicMock()
     gov = MagicMock()
     tag_classifier = MagicMock()
@@ -19,6 +22,7 @@ def _graph(*, dq_writer=None):
         tag_classifier=tag_classifier,
         policy_classifier=policy_classifier,
         dq_writer=dq_writer,
+        checkpointer=checkpointer,
     ), om, gov
 
 
@@ -39,16 +43,14 @@ def test_dq_route_without_writer_returns_unavailable() -> None:
     gov.get_workflow_status.assert_not_called()
 
 
-def test_dq_route_with_writer_calls_backend_and_skips_om_context() -> None:
+def test_dq_route_pauses_for_hitl_approval_before_backend_call() -> None:
+    """HITL: graph_dq.py's interrupt() must fire BEFORE create_dq_test_case
+    -- verified here by asserting the Backend call has NOT happened yet at
+    the pause point."""
     backend = MagicMock()
-    backend.create_dq_test_case.return_value = {
-        "id": "tc-1",
-        "natural_key_hash": "dg_abc",
-        "om_testcase_id": "om-1",
-        "status": "STAGED",
-    }
     dq_writer = DQWriterService(backend=backend, model_name="m", prompt_version="v1")
-    graph, om, gov = _graph(dq_writer=dq_writer)
+    graph, om, gov = _graph(dq_writer=dq_writer, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "dq-test-1"}}
 
     result: AgentState = graph.invoke(
         {
@@ -58,7 +60,44 @@ def test_dq_route_with_writer_calls_backend_and_skips_om_context() -> None:
             "dq_rule_id": "rule-1",
             "dq_worker_id": "worker-1",
             "dq_test_definition_fqn": "columnValuesToBeNotNull",
-        }
+        },
+        config=config,
+    )
+    assert "dq_result" not in result
+    assert "__interrupt__" in result
+    payload = result["__interrupt__"][0].value
+    assert payload["kind"] == "DQ_TESTCASE_APPROVAL"
+    assert payload["target_asset_fqn"] == "financial.crm.customers"
+    backend.create_dq_test_case.assert_not_called()
+
+
+def test_dq_route_with_writer_calls_backend_and_skips_om_context() -> None:
+    backend = MagicMock()
+    backend.create_dq_test_case.return_value = {
+        "id": "tc-1",
+        "natural_key_hash": "dg_abc",
+        "om_testcase_id": "om-1",
+        "status": "STAGED",
+    }
+    dq_writer = DQWriterService(backend=backend, model_name="m", prompt_version="v1")
+    graph, om, gov = _graph(dq_writer=dq_writer, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "dq-test-2"}}
+
+    # First call pauses at the HITL interrupt (see the pause-only test
+    # above); resume with an APPROVE decision to reach the real write.
+    graph.invoke(
+        {
+            "request_type": "DQ",
+            "entity_type": "table",
+            "entity_fqn": "financial.crm.customers",
+            "dq_rule_id": "rule-1",
+            "dq_worker_id": "worker-1",
+            "dq_test_definition_fqn": "columnValuesToBeNotNull",
+        },
+        config=config,
+    )
+    result: AgentState = graph.invoke(
+        Command(resume={"decision": "APPROVE"}), config=config
     )
     assert result["dq_result"]["status"] == "STAGED"
     assert result["dq_result"]["natural_key_hash"] == "dg_abc"
@@ -67,6 +106,30 @@ def test_dq_route_with_writer_calls_backend_and_skips_om_context() -> None:
     om.get_entity_context.assert_not_called()
     gov.get_workflow_status.assert_not_called()
     backend.create_dq_test_case.assert_called_once()
+
+
+def test_dq_route_rejected_by_human_skips_backend_call() -> None:
+    backend = MagicMock()
+    dq_writer = DQWriterService(backend=backend, model_name="m", prompt_version="v1")
+    graph, _, _ = _graph(dq_writer=dq_writer, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "dq-test-3"}}
+
+    graph.invoke(
+        {
+            "request_type": "DQ",
+            "entity_type": "table",
+            "entity_fqn": "financial.crm.customers",
+            "dq_rule_id": "rule-1",
+            "dq_worker_id": "worker-1",
+            "dq_test_definition_fqn": "columnValuesToBeNotNull",
+        },
+        config=config,
+    )
+    result: AgentState = graph.invoke(
+        Command(resume={"decision": "REJECT"}), config=config
+    )
+    assert result["dq_result"]["status"] == "REJECTED"
+    backend.create_dq_test_case.assert_not_called()
 
 
 def test_dq_route_kill_switch_skips_backend_call() -> None:

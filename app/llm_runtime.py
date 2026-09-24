@@ -4,7 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from app.classifier import OpenAIPolicyClassifier, OpenAIStructuredClassifier
+from app.classifier import (
+    OpenAIChatRouter,
+    OpenAICopilotChatModel,
+    OpenAIPolicyClassifier,
+    OpenAIStructuredClassifier,
+)
 
 _ALLOWED_STRUCTURED_METHODS = frozenset({"json_schema", "function_calling", "json_mode"})
 
@@ -72,6 +77,26 @@ class LLMRuntimeConfig:
 
     def policy_classifier(self) -> OpenAIPolicyClassifier:
         return OpenAIPolicyClassifier(
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            use_responses_api=self.use_responses_api,
+            structured_output_method=self.structured_output_method,
+            disable_thinking=self.disable_thinking,
+        )
+
+    def copilot_chat_model(self) -> OpenAICopilotChatModel:
+        return OpenAICopilotChatModel(
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            use_responses_api=self.use_responses_api,
+            structured_output_method=self.structured_output_method,
+            disable_thinking=self.disable_thinking,
+        )
+
+    def chat_router(self) -> OpenAIChatRouter:
+        return OpenAIChatRouter(
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,

@@ -8,12 +8,69 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.messages import AIMessage
+from langgraph.types import interrupt
+
 from app.adapters.policy import PolicyAdapterError, to_backend_logical_policy
 from app.audit_fingerprint import input_fingerprint, model_fingerprint, utc_now_iso
 from app.classifier import PolicyClassifier
 from app.clients.backend_mcp import BackendMCPError
 from app.gateways.governance import GovernanceGateway
 from app.schemas import AIWriteAuditRef, PolicyReasoningResult, Subject
+
+
+def _format_policy_chat_reply(result: dict[str, Any], entity_fqn: str) -> str:
+    """Format a policy reasoning result as a readable chat message."""
+    lines = [f"**Policy reasoning for `{entity_fqn}`**\n"]
+
+    proposal = result.get("proposal")
+    if proposal and isinstance(proposal, dict):
+        lines.append(f"📝 **Proposed action:** `{proposal.get('action', '?')}`")
+        resource = proposal.get("resource") or {}
+        if isinstance(resource, dict):
+            parts = [v for k, v in resource.items() if v and k != "columns"]
+            if parts:
+                lines.append(f"   Resource: {' / '.join(str(p) for p in parts)}")
+        subjects = proposal.get("subjects") or []
+        if subjects:
+            subj_str = ", ".join(
+                f"{s.get('type','?')}:`{s.get('name','?')}`"
+                for s in subjects if isinstance(s, dict)
+            )
+            lines.append(f"   Subjects: {subj_str}")
+        mask = proposal.get("mask_type")
+        if mask:
+            lines.append(f"   Mask type: `{mask}`")
+        rationale = result.get("rationale") or proposal.get("rationale")
+        if rationale:
+            lines.append(f"\n💡 {rationale}")
+    else:
+        lines.append("ℹ️ No policy proposal generated.")
+        rationale = result.get("rationale")
+        if rationale:
+            lines.append(f"\n💡 {rationale}")
+
+    reason_code = result.get("reason_code")
+    if reason_code:
+        lines.append(f"\n🏷️ Reason code: `{reason_code}`")
+
+    warnings = result.get("warnings") or []
+    if warnings:
+        lines.append("\n⚠️ **Warnings:**")
+        for w in warnings:
+            lines.append(f"  - {w}")
+
+    conflict = result.get("conflict")
+    if isinstance(conflict, dict) and conflict.get("has_conflict"):
+        lines.append("\n⛔ **Conflict detected** — review before activating.")
+
+    draft = result.get("draft")
+    if isinstance(draft, dict):
+        lines.append(f"\n✅ **DRAFT created** — version {draft.get('version','?')} (not yet active, requires human activation).")
+
+    return "\n".join(lines)
+
+
 
 
 def _details_dict(context: dict[str, Any]) -> dict[str, Any]:
@@ -267,6 +324,40 @@ def build_policy_nodes(
         # from any later created_at on the persisted DRAFT row (Hard
         # Invariant #13).
         validated_at = utc_now_iso()
+
+        # HITL (per user's explicit choice): pause here, before ANY Backend
+        # write happens -- even the DRAFT write, which is itself already
+        # authority-safe (create_policy_version never changes authority;
+        # only a separate, human-triggered activate_policy_version call
+        # does). Requires a checkpointer to resume correctly; if none is
+        # configured this call raises (LangGraph's own behavior), which is
+        # the correct fail-closed outcome -- a graph that can't durably
+        # pause should not silently skip the pause and write anyway.
+        approval = interrupt(
+            {
+                "kind": "POLICY_DRAFT_APPROVAL",
+                "policy_key": policy_key,
+                "logical_policy": document,
+                "conflict": result.get("conflict"),
+                "preview": result.get("preview"),
+                "policy_intent": state.get("policy_intent"),
+                "message": (
+                    f"Agent proposes creating a DRAFT policy version for "
+                    f"{policy_key!r}. Approve to persist the DRAFT (still "
+                    "not active -- a separate human activation step is "
+                    "required afterward), or reject to discard."
+                ),
+            }
+        )
+        if not isinstance(approval, dict) or approval.get("decision") != "APPROVE":
+            result = _append_policy_warning(
+                state,
+                "DRAFT was not persisted: human reviewer rejected the proposal"
+                if isinstance(approval, dict)
+                else "DRAFT was not persisted: invalid approval response",
+            )
+            result["reason_code"] = "DRAFT_SKIPPED_REJECTED"
+            return {"policy_result": result}
 
         draft = gov_gateway.create_policy_version(
             policy_key=policy_key,

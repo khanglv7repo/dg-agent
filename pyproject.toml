@@ -26,6 +26,12 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+# langgraph dev/up server tooling -- separate from runtime deps above since
+# only `langgraph.json` + `app/langgraph_entry.py` need it (Studio UI / HTTP
+# access to the graph), not the Celery worker or GovernanceAgentRunner paths.
+server = [
+    "langgraph-cli[inmem]>=0.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

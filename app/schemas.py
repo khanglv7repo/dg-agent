@@ -144,6 +144,7 @@ PolicyReasonCode = Literal[
     "DRAFT_SKIPPED_MAPPING",       # service mapping missing/mismatched, DRAFT blocked
     "CONFLICT_CHECK_FAILED",       # conflict check missing, DRAFT not persisted
     "KILL_SWITCH_DISABLED",        # feature flag OFF
+    "DRAFT_SKIPPED_REJECTED",      # HITL interrupt(): human reviewer rejected the proposal
 ]
 
 
@@ -181,8 +182,75 @@ class AIWriteAuditRef(BaseModel):
     )
 
 
+class CopilotRecommendation(BaseModel):
+    """The ONLY schema handed to `with_structured_output()` for the review
+    copilot's optional Approve/Reject suggestion (TASK-09 review copilot
+    node, `app/review_copilot.py`). Deliberately separate from any
+    write-boundary schema (PolicyReasonCode, AIWriteAuditRef) -- this is a
+    suggestion shown to a human, never itself a write or an authority
+    signal. Mirrors the same lesson as `PolicyLLMOutput` (see its
+    docstring): the LLM must only ever be handed the exact fields it's
+    meant to produce, nothing code-owned."""
+
+    suggestion: Literal["APPROVE", "REJECT", "NEEDS_MORE_INFO"]
+    rationale: str = Field(min_length=1, max_length=2000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    key_risks: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ChatIntent(BaseModel):
+    """The ONLY schema handed to `with_structured_output()` for the chat
+    entry node (`app/graph_chat.py`) that classifies a free-text message
+    into one of the 5 structured domains, or decides the message doesn't
+    yet carry enough information to run any of them. Same "LLM only
+    produces the fields it should" discipline as `PolicyLLMOutput`/
+    `CopilotRecommendation` -- this is a routing decision, never itself a
+    write or an authority signal.
+
+    `needs_clarification=True` is the fail-closed default path: rather than
+    guessing a plausible-looking `entity_fqn` the LLM was never given,
+    the chat node replies conversationally and asks for what's missing
+    (mirrors how a human colleague would respond to "hi" -- with a
+    greeting/question, not a crash)."""
+
+    needs_clarification: bool = Field(
+        description=(
+            "True if the message doesn't contain enough information to run "
+            "any of TAG/POLICY/DQ/VERIFICATION/COPILOT (e.g. a greeting, a "
+            "vague request, or missing a required field like entity_fqn). "
+            "When true, reply_message is a natural conversational reply or "
+            "clarifying question; every other field is left at its default."
+        )
+    )
+    reply_message: str = Field(
+        default="",
+        max_length=4000,
+        description="Natural-language reply when needs_clarification=True.",
+    )
+    request_type: Literal["TAG", "POLICY", "DQ", "VERIFICATION", "COPILOT"] | None = None
+    entity_fqn: str | None = Field(default=None, max_length=1024)
+    entity_type: str = Field(default="table", max_length=64)
+    copilot_question: str | None = Field(default=None, max_length=4000)
+    search_query: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Set this (instead of/alongside needs_clarification) whenever "
+            "the user doesn't know the exact entity_fqn but named or implied "
+            "a topic worth searching OpenMetadata for (e.g. 'khách hàng', "
+            "'tài chính', 'giao dịch', or an explicit 'tìm giúp tôi'/'tự tìm "
+            "đi' follow-up -- infer the topic from the whole conversation, "
+            "not just the latest message). A short keyword or phrase, "
+            "extracted or translated from what the user actually said -- "
+            "never invented. The chat node calls OpenMetadata's "
+            "search_metadata with this value and returns real results; "
+            "you never call any tool yourself, this field is read by code."
+        ),
+    )
+
+
 class AgentRunRequest(BaseModel):
-    request_type: Literal["TAG", "POLICY", "DQ", "VERIFICATION"] = "TAG"
+    request_type: Literal["TAG", "POLICY", "DQ", "VERIFICATION", "COPILOT"] = "TAG"
     event_id: str = Field(default="req-local", min_length=1, max_length=255)
     entity_type: str = Field(default="table", min_length=1, max_length=64)
     entity_fqn: str = Field(min_length=1, max_length=1024)
@@ -227,6 +295,14 @@ class AgentRunRequest(BaseModel):
         ),
     )
 
+    # TASK-09: COPILOT request fields (request_type="COPILOT" only). RAG
+    # review copilot for a human reviewer -- answers questions and/or gives
+    # an optional Approve/Reject suggestion about a pending DRAFT
+    # policy/tag suggestion/DQ test case. Never writes anything itself; see
+    # app/review_copilot.py.
+    copilot_question: str | None = Field(default=None, max_length=4000)
+    copilot_want_recommendation: bool = False
+
 
 class AgentRunResponse(BaseModel):
     status: str
@@ -247,3 +323,11 @@ class AgentRunResponse(BaseModel):
     # reasoning schemas).
     dq_result: dict[str, Any] | None = None
     verification_result: dict[str, Any] | None = None
+    # TASK-09: COPILOT result (request_type="COPILOT" only).
+    copilot_answer: str | None = None
+    copilot_recommendation: CopilotRecommendation | None = None
+    # HITL addendum: populated instead of the usual result fields when
+    # status="PENDING_APPROVAL" -- graph_policy.py/graph_dq.py/
+    # graph_copilot.py's interrupt() calls paused the graph. Contains the
+    # interrupt's payload plus the thread_id needed to resume it.
+    pending_approval: dict[str, Any] | None = None
